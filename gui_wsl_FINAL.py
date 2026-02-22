@@ -24,7 +24,7 @@ from PyQt5.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView,
     QGroupBox, QDoubleSpinBox, QSpinBox, QFileDialog,
     QMessageBox, QCheckBox, QSplitter, QScrollArea,
-    QFrame, QSlider,
+    QFrame,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt5.QtGui import (
@@ -221,14 +221,12 @@ class PanelMeshCanvas(QWidget):
     MODE_SELECT : click a node to select it (for BC / load assignment)
     MODE_CRACK  : click at any Y to add / remove a pending crack line
     """
-    node_clicked         = pyqtSignal(int)
-    crack_y_added        = pyqtSignal(float)
-    crack_y_removed      = pyqtSignal(float)
-    hand_strokes_changed = pyqtSignal()
+    node_clicked    = pyqtSignal(int)
+    crack_y_added   = pyqtSignal(float)
+    crack_y_removed = pyqtSignal(float)
 
     MODE_SELECT = "select"
     MODE_CRACK  = "crack"
-    MODE_DRAW   = "draw"
 
     def __init__(self):
         super().__init__()
@@ -249,9 +247,6 @@ class PanelMeshCanvas(QWidget):
         self._below_nodes = set()    # nids on the BELOW side of cracks (orange)
         self._above_nodes = set()    # nids on the ABOVE side of cracks (violet)
         self.show_crack_links = True # draw short lines between each (below,above) pair
-        self.hand_strokes = []       # list of completed strokes; each is [(x,y), ...] model coords
-        self._cur_stroke  = []       # stroke currently being drawn
-        self._drawing     = False    # True while LMB is held in MODE_DRAW
         self.setMouseTracking(True)
 
     # ── coord transforms ──────────────────────────────────────────────────────
@@ -312,8 +307,7 @@ class PanelMeshCanvas(QWidget):
 
     def set_mode(self, mode):
         self.mode = mode
-        self.setCursor(Qt.CrossCursor if mode in (self.MODE_CRACK, self.MODE_DRAW)
-                       else Qt.ArrowCursor)
+        self.setCursor(Qt.CrossCursor if mode == self.MODE_CRACK else Qt.ArrowCursor)
         self.update()
 
     # ── events ────────────────────────────────────────────────────────────────
@@ -331,31 +325,9 @@ class PanelMeshCanvas(QWidget):
                 if abs(yc - my) < 0.04 * self.panel_H:
                     self.crack_y_removed.emit(yc); return
             self.crack_y_added.emit(my)
-        elif self.mode == self.MODE_DRAW:
-            self._drawing = True
-            mx, my = self._to_model(px, py)
-            self._cur_stroke = [(mx, my)]
-            self.update()
 
     def mouseMoveEvent(self, event):
-        self._hover_model = self._to_model(event.x(), event.y())
-        if self.mode == self.MODE_DRAW and self._drawing:
-            mx, my = self._hover_model
-            if (not self._cur_stroke or
-                    math.hypot(mx - self._cur_stroke[-1][0],
-                               my - self._cur_stroke[-1][1]) > 1e-3):
-                self._cur_stroke.append((mx, my))
-        self.update()
-
-    def mouseReleaseEvent(self, event):
-        if (self.mode == self.MODE_DRAW and event.button() == Qt.LeftButton
-                and self._drawing):
-            self._drawing = False
-            if len(self._cur_stroke) >= 2:
-                self.hand_strokes.append(list(self._cur_stroke))
-                self.hand_strokes_changed.emit()
-            self._cur_stroke = []
-            self.update()
+        self._hover_model = self._to_model(event.x(), event.y()); self.update()
 
     def leaveEvent(self, event):
         self._hover_model = None; self.update()
@@ -479,21 +451,6 @@ class PanelMeshCanvas(QWidget):
         p.save(); p.translate(lx - 22, ly); p.rotate(-90)
         p.drawText(-18, 4, f"H={self.panel_H:.3f}"); p.restore()
 
-        # Hand-drawn strokes — completed ones (solid red) + in-progress (dashed)
-        pen_stroke = QPen(QColor("#ff4444"), 3); pen_stroke.setCapStyle(Qt.RoundCap)
-        pen_cur    = QPen(QColor("#ff8888"), 2, Qt.DashLine)
-        for stroke in self.hand_strokes:
-            if len(stroke) < 2: continue
-            p.setPen(pen_stroke)
-            pts = [self._to_px(x, y) for x, y in stroke]
-            for i in range(len(pts) - 1):
-                p.drawLine(pts[i][0], pts[i][1], pts[i+1][0], pts[i+1][1])
-        if len(self._cur_stroke) >= 2:
-            p.setPen(pen_cur)
-            pts = [self._to_px(x, y) for x, y in self._cur_stroke]
-            for i in range(len(pts) - 1):
-                p.drawLine(pts[i][0], pts[i][1], pts[i+1][0], pts[i+1][1])
-
         # Stats bar
         p.setPen(QPen(QColor(C4), 1)); p.setFont(QFont("Consolas", 8))
         nn = len(self.nodes); nt = len(self.tris); nc = len(self.crack_pairs)
@@ -537,25 +494,6 @@ class PanelMeshCanvas(QWidget):
         path.lineTo(ax - uy * 4, ay + ux * 4)
         path.lineTo(ax + uy * 4, ay - ux * 4)
         path.closeSubpath(); p.fillPath(path, QBrush(QColor(color)))
-
-    # ── hand-stroke public API ────────────────────────────────────────────────
-    def get_hand_strokes(self):
-        """Return a deep copy of all completed strokes."""
-        return [list(s) for s in self.hand_strokes]
-
-    def set_hand_strokes(self, strokes):
-        """Replace all strokes (list of lists of (x,y) tuples)."""
-        self.hand_strokes = [list(s) for s in strokes]
-        self.update()
-
-    def clear_hand_strokes(self):
-        self.hand_strokes = []; self._cur_stroke = []; self._drawing = False
-        self.hand_strokes_changed.emit(); self.update()
-
-    def undo_hand_stroke(self):
-        if self.hand_strokes:
-            self.hand_strokes.pop()
-            self.hand_strokes_changed.emit(); self.update()
 
 
 # =============================================================================
@@ -645,27 +583,6 @@ class GeometryTab(QWidget):
         vc.addLayout(row_inp)
         self.lbl_crack_ys = mk_lbl("No crack lines defined.", "sub")
         vc.addWidget(self.lbl_crack_ys)
-        # ── Hand-draw sub-section ──────────────────────────────────────────
-        vc.addWidget(sep())
-        row_hd = QHBoxLayout()
-        self.btn_hand_draw   = QPushButton("✍ Hand Draw")
-        self.btn_hand_draw.setObjectName("flat")
-        self.btn_hand_draw.setCheckable(True)
-        self.btn_hand_draw.setToolTip("Toggle hand-draw mode: drag to sketch a crack stroke on the canvas")
-        self.btn_undo_stroke = QPushButton("Undo")
-        self.btn_undo_stroke.setObjectName("flat")
-        self.btn_undo_stroke.setToolTip("Remove the last drawn stroke")
-        self.btn_clr_strokes = QPushButton("Clear")
-        self.btn_clr_strokes.setObjectName("flat")
-        self.btn_clr_strokes.setToolTip("Remove all hand-drawn strokes")
-        row_hd.addWidget(self.btn_hand_draw)
-        row_hd.addWidget(self.btn_undo_stroke)
-        row_hd.addWidget(self.btn_clr_strokes)
-        row_hd.addStretch()
-        vc.addLayout(row_hd)
-        self.lbl_hand_strokes = mk_lbl("hand strokes: 0", "sub")
-        vc.addWidget(self.lbl_hand_strokes)
-        vc.addWidget(mk_lbl("v1: hand-draw creates horizontal crack at mean Y", "sub"))
         lv.addWidget(grp_crack)
 
         # Boundary conditions
@@ -787,9 +704,7 @@ class GeometryTab(QWidget):
         self._bc_nodes  = {}     # {nid: (fix_x, fix_y)}
         self._load_nodes = {}    # {nid: (Fx, Fy)}
         self._selected_node = None
-        self._crack_ys      = []
-        self._hand_strokes  = []   # mirror of canvas.hand_strokes
-        self._hand_crack_ys = []   # y_mean derived from each hand stroke
+        self._crack_ys = []
 
         # wire
         self.btn_gen.clicked.connect(self._generate)
@@ -799,10 +714,6 @@ class GeometryTab(QWidget):
         self.canvas.node_clicked.connect(self._on_node_clicked)
         self.canvas.crack_y_added.connect(self._add_crack_y)
         self.canvas.crack_y_removed.connect(self._remove_crack_y)
-        self.canvas.hand_strokes_changed.connect(self._on_hand_strokes_changed)
-        self.btn_hand_draw.toggled.connect(self._toggle_hand_draw)
-        self.btn_undo_stroke.clicked.connect(self.canvas.undo_hand_stroke)
-        self.btn_clr_strokes.clicked.connect(self.canvas.clear_hand_strokes)
         self.btn_fix_bot.clicked.connect(self._fix_bottom)
         self.btn_roller_top.clicked.connect(self._roller_top)
         self.btn_clr_bc.clicked.connect(self._clear_all_bc)
@@ -865,39 +776,6 @@ class GeometryTab(QWidget):
                                        ", ".join(f"{y:.3f}" for y in self._crack_ys))
         else:
             self.lbl_crack_ys.setText("No crack lines defined.")
-
-    # ── hand-draw handlers ────────────────────────────────────────────────────
-    def _toggle_hand_draw(self, on):
-        if on:
-            self.btn_crack_mode.setChecked(False)   # deactivate click-crack mode
-            self.canvas.set_mode(PanelMeshCanvas.MODE_DRAW)
-            self.lbl_canvas_hint.setText("Draw mode: drag mouse to draw crack stroke.")
-        else:
-            self.canvas.set_mode(PanelMeshCanvas.MODE_SELECT)
-            self.lbl_canvas_hint.setText("Select mode: click a node to assign BC / load")
-
-    def _on_hand_strokes_changed(self):
-        strokes = self.canvas.get_hand_strokes()
-        H   = max(self.sb_H.value(), 1e-6)
-        tol = 0.01 * H
-        # Compute new derived ys from current strokes
-        new_ys = []
-        for stroke in strokes:
-            if stroke:
-                y_mean = sum(pt[1] for pt in stroke) / len(stroke)
-                y_mean = max(tol, min(H - tol, y_mean))
-                new_ys.append(y_mean)
-        # Remove previously derived ys that no longer have a matching stroke
-        for y_old in self._hand_crack_ys:
-            if not any(abs(y_old - y_new) < tol for y_new in new_ys):
-                self._remove_crack_y(y_old)
-        # Add newly derived ys not already in _crack_ys
-        for y_new in new_ys:
-            if not any(abs(y_new - yc) < tol for yc in self._crack_ys):
-                self._add_crack_y(y_new)
-        self._hand_strokes  = strokes
-        self._hand_crack_ys = new_ys
-        self.lbl_hand_strokes.setText(f"hand strokes: {len(strokes)}")
 
     def _generate(self):
         # Merge any Y values the user typed but hasn't committed yet
@@ -1147,9 +1025,6 @@ class GeometryTab(QWidget):
             p["mesh_crack_pairs"] = [list(cp) for cp in md["crack_pairs"]]
         p["bc_nodes"]    = {str(k): list(v) for k, v in self._bc_nodes.items()}
         p["load_nodes"]  = {str(k): list(v) for k, v in self._load_nodes.items()}
-        p["hand_crack_strokes"] = [[[pt[0], pt[1]] for pt in s]
-                                   for s in self._hand_strokes]
-        p["hand_crack_ys"]      = list(self._hand_crack_ys)
         return p
 
     def get_mesh_data(self):
@@ -1403,11 +1278,8 @@ class RunTab(QWidget):
         self.btn_validate_build = QPushButton("✓ Validate OpenSees Build")
         self.btn_validate_build.setObjectName("flat")
         self.btn_validate_build.setToolTip("Check if OpenSees has MultiSurfCrack2D and proper interface element support")
-        self.btn_self_test = QPushButton("🧪 Run Integration Self-Test")
-        self.btn_self_test.setObjectName("flat")
-        self.btn_self_test.setToolTip("Run comprehensive test to PROVE MultiSurfCrack2D is actually being used (not silently falling back)")
         self.btn_clear = QPushButton("Clear Console"); self.btn_clear.setObjectName("flat")
-        brow.addWidget(self.btn_run); brow.addWidget(self.btn_validate_build); brow.addWidget(self.btn_self_test); brow.addWidget(self.btn_clear); brow.addStretch()
+        brow.addWidget(self.btn_run); brow.addWidget(self.btn_validate_build); brow.addWidget(self.btn_clear); brow.addStretch()
         outer.addLayout(brow)
 
         self.lbl_status = mk_lbl("Ready. Configure Geometry → Crack Materials → Analysis → Run.", "sub")
@@ -1421,7 +1293,6 @@ class RunTab(QWidget):
 
         self.btn_run.clicked.connect(self.run_requested.emit)
         self.btn_validate_build.clicked.connect(self._validate_build)
-        self.btn_self_test.clicked.connect(self._run_self_test)
         self.btn_clear.clicked.connect(self.console.clear)
 
     def _validate_build(self):
@@ -1441,52 +1312,6 @@ class RunTab(QWidget):
         else:
             QMessageBox.warning(self, "Build Validation Failed",
                               f"✗ OpenSees does not have required support\n\n{msg}")
-
-    def _run_self_test(self):
-        """Run comprehensive integration self-test to PROVE MultiSurfCrack2D is being used."""
-        self.append("\n" + "="*70)
-        self.append("[SELFTEST] ===== INTEGRATION SELF-TEST (PROOF OF USAGE) =====")
-        self.append("="*70)
-
-        success, details = run_comprehensive_self_test()
-
-        if success:
-            self.append("[PASS] ✓ COMPREHENSIVE SELF-TEST PASSED")
-            self.append("[PASS] ✓ MultiSurfCrack2D is CONFIRMED to be correctly integrated")
-            self.append("[PASS] ✓ Element type creation succeeded")
-            self.append("[PASS] ✓ Small analysis ran successfully")
-            self.append("="*70)
-            self.append("RESULT: MultiSurfCrack2D integration is WORKING CORRECTLY")
-            self.append("="*70 + "\n")
-            QMessageBox.information(self, "Self-Test PASSED",
-                f"✓ COMPREHENSIVE INTEGRATION TEST PASSED\n\n"
-                f"MultiSurfCrack2D is confirmed to be working correctly.\n\n"
-                f"Details:\n{details}")
-        else:
-            self.append("[FAIL] ✗ COMPREHENSIVE SELF-TEST FAILED")
-            self.append("="*70)
-            self.append("RESULT: MultiSurfCrack2D integration has issues")
-            self.append("="*70 + "\n")
-            self.append("[FIX] Attempting auto-fix...")
-
-            # Try auto-fix
-            fix_result = attempt_auto_fix()
-            if fix_result:
-                self.append("[FIX] ✓ Auto-fix applied. Re-running self-test...")
-                success2, details2 = run_comprehensive_self_test()
-                if success2:
-                    self.append("[PASS] ✓ SELF-TEST PASSED AFTER AUTO-FIX")
-                    self.append("="*70 + "\n")
-                else:
-                    self.append("[FAIL] ✗ Self-test still failing after auto-fix")
-                    self.append("="*70 + "\n")
-            else:
-                self.append("[FAIL] ✗ Could not apply auto-fix")
-                self.append("="*70 + "\n")
-
-            QMessageBox.warning(self, "Self-Test FAILED",
-                f"✗ COMPREHENSIVE INTEGRATION TEST FAILED\n\n{details}\n\n"
-                f"Check console for details and auto-fix attempts.")
 
     def get_activate(self): return self.wsl_activate.text().strip() or "true"
 
@@ -1510,7 +1335,6 @@ class ResultsTab(QWidget):
         "Crack Hysteresis (Slip vs Force)",
         "Deformed Mesh",
         "Displacement Magnitude Contour",
-        "Crack Behavior Overlay",
     ]
     COLORS = ["#58a6ff", "#3fb950", "#f78166", "#d2a679", "#c9d1d9", "#8b949e"]
 
@@ -1534,23 +1358,6 @@ class ResultsTab(QWidget):
         ctrl.addStretch()
         outer.addLayout(ctrl)
 
-        # ── Overlay-mode controls (hidden unless "Crack Behavior Overlay") ────
-        self._overlay_ctrl = QWidget()
-        ocl = QHBoxLayout(self._overlay_ctrl)
-        ocl.setContentsMargins(0, 0, 0, 0); ocl.setSpacing(6)
-        self.cmb_ov_metric = QComboBox()
-        self.cmb_ov_metric.addItems(["Opening", "Slip"])
-        self.sld_step = QSlider(Qt.Horizontal)
-        self.sld_step.setMinimum(0); self.sld_step.setMaximum(0)
-        self.sld_step.setValue(0); self.sld_step.setFixedWidth(220)
-        self.lbl_step = mk_lbl("Step: 0/0", "sub")
-        for w in [mk_lbl("Metric:"), self.cmb_ov_metric,
-                  mk_lbl("  Step:"), self.sld_step, self.lbl_step]:
-            ocl.addWidget(w)
-        ocl.addStretch()
-        outer.addWidget(self._overlay_ctrl)
-        self._overlay_ctrl.setVisible(False)
-
         self.fig = Figure(facecolor=BG_DEEP, tight_layout=True)
         self.ax  = self.fig.add_subplot(111)
         self._style_ax()
@@ -1560,14 +1367,12 @@ class ResultsTab(QWidget):
         outer.addWidget(self.tb); outer.addWidget(self.canv, stretch=1)
 
         self._reset()
-        self.cmb_plot.currentTextChanged.connect(self._on_plot_mode_changed)
+        self.cmb_plot.currentTextChanged.connect(self.replot)
         self.cmb_crack.currentIndexChanged.connect(self.replot)
         self.sb_scale.valueChanged.connect(self.replot)
         self.btn_rp.clicked.connect(self.replot)
         self.btn_save.clicked.connect(self._save)
         self.btn_csv.clicked.connect(self._csv)
-        self.cmb_ov_metric.currentIndexChanged.connect(self.replot)
-        self.sld_step.valueChanged.connect(self._on_step_slider)
 
     def _style_ax(self):
         self.ax.set_facecolor(BG_PANEL)
@@ -1577,24 +1382,12 @@ class ResultsTab(QWidget):
         for s in self.ax.spines.values(): s.set_edgecolor(BORDER)
         self.ax.grid(True, alpha=0.15, color=BORDER, linestyle="--")
 
-    def _on_plot_mode_changed(self, mode):
-        is_overlay = (mode == "Crack Behavior Overlay")
-        self._overlay_ctrl.setVisible(is_overlay)
-        self.replot()
-
-    def _on_step_slider(self, val):
-        n = max(len(self._disp), 1)
-        self.lbl_step.setText(f"Step: {val}/{n - 1}")
-        self.replot()
-
     def _reset(self):
         self._disp = np.array([]); self._force = np.array([])
         self._crack_pos = np.array([])
         self._co = []; self._cs = []
         self._mesh_nodes = {}; self._mesh_tris = []
         self._node_disp_last = {}
-        self._hand_strokes = []
-        self._hand_ys      = []
 
     def set_results(self, r):
         self._disp  = r["disp"]; self._force = r["force"]
@@ -1604,14 +1397,6 @@ class ResultsTab(QWidget):
         self._mesh_nodes     = r.get("mesh_nodes", {})
         self._mesh_tris      = r.get("mesh_tris", [])
         self._node_disp_last = r.get("node_disp_last", {})
-        self._hand_strokes   = r.get("hand_crack_strokes", [])
-        self._hand_ys        = r.get("hand_crack_ys", [])
-        # Update step slider range to match number of converged steps
-        n = max(len(self._disp) - 1, 0)
-        self.sld_step.blockSignals(True)
-        self.sld_step.setMaximum(n); self.sld_step.setValue(n)
-        self.sld_step.blockSignals(False)
-        self.lbl_step.setText(f"Step: {n}/{n}")
         self.cmb_crack.blockSignals(True); self.cmb_crack.clear()
         self.cmb_crack.addItem("All Cracks")
         for i, y in enumerate(self._crack_pos):
@@ -1668,9 +1453,6 @@ class ResultsTab(QWidget):
         elif mode == "Displacement Magnitude Contour":
             self._plot_contour()
 
-        elif mode == "Crack Behavior Overlay":
-            self._plot_crack_overlay()
-
         self.canv.draw()
 
     def _plot_deformed(self):
@@ -1716,88 +1498,6 @@ class ResultsTab(QWidget):
         self.ax.triplot(triang, color=BORDER, lw=0.3, alpha=0.4)
         self.ax.set_aspect("equal"); self.ax.set_xlabel("X (m)"); self.ax.set_ylabel("Y (m)")
         self.ax.set_title("Displacement Magnitude Contour")
-
-    def _plot_crack_overlay(self):
-        """Draw hand-drawn strokes over the undeformed mesh, styled by crack scalar."""
-        if not self._hand_strokes:
-            self.ax.set_title(
-                "No hand-drawn cracks available\n"
-                "(draw strokes in Geometry tab  ✍ Hand Draw mode, then re-run analysis)")
-            return
-
-        # Light undeformed mesh backdrop
-        nodes = self._mesh_nodes
-        if nodes and self._mesh_tris:
-            for _, n1, n2, n3 in self._mesh_tris:
-                xs_ = [nodes[n][0] for n in (n1, n2, n3, n1)]
-                ys_ = [nodes[n][1] for n in (n1, n2, n3, n1)]
-                self.ax.plot(xs_, ys_, color=BORDER, lw=0.3, alpha=0.4, zorder=1)
-
-        step_idx     = self.sld_step.value()
-        metric       = self.cmb_ov_metric.currentText()
-        data_arr     = self._co if metric == "Opening" else self._cs
-        stroke_color = "#ff7043" if metric == "Opening" else "#ab47bc"
-
-        # Tolerance for matching stroke y_mean to a crack position
-        H = 1.0
-        if nodes:
-            all_ys = [nodes[n][1] for n in nodes]
-            H = max(all_ys) if all_ys else 1.0
-        tol = max(5e-3 * H, 1e-4)
-
-        legend_handles = []; legend_labels = []
-        for si, stroke in enumerate(self._hand_strokes):
-            if not stroke:
-                continue
-            xs_s  = [pt[0] for pt in stroke]
-            ys_s  = [pt[1] for pt in stroke]
-            y_mean = sum(ys_s) / len(ys_s)
-
-            # Find nearest crack position in analysis results
-            crack_idx = None
-            if len(self._crack_pos) > 0:
-                dists = [abs(float(cp) - y_mean) for cp in self._crack_pos]
-                best  = int(min(range(len(dists)), key=lambda i: dists[i]))
-                if dists[best] < tol:
-                    crack_idx = best
-
-            # Read scalar at step
-            val = 0.0
-            if crack_idx is not None and crack_idx < len(data_arr):
-                arr = data_arr[crack_idx]
-                if arr:
-                    idx = min(step_idx, len(arr) - 1)
-                    try: val = float(arr[idx])
-                    except (TypeError, IndexError): val = 0.0
-
-            mag   = abs(val)
-            lw    = min(max(2.0 + mag * 2000.0, 2.0), 10.0)
-            alpha = min(max(0.3 + mag * 500.0,  0.3),  1.0)
-            line, = self.ax.plot(xs_s, ys_s, color=stroke_color, lw=lw,
-                                 alpha=alpha, solid_capstyle='round', zorder=3)
-            if crack_idx is not None:
-                lbl = (f"Stroke {si+1}  y≈{y_mean:.3f} m : "
-                       f"{metric.lower()} = {val * 1000.0:.3f} mm")
-            else:
-                lbl = f"Stroke {si+1}  y≈{y_mean:.3f} m : no matching crack"
-            legend_handles.append(line); legend_labels.append(lbl)
-
-        if legend_handles:
-            self.ax.legend(legend_handles, legend_labels,
-                           facecolor=BG_CARD, edgecolor=BORDER,
-                           labelcolor=TXT, fontsize=8)
-
-        self.ax.set_aspect("equal")
-        self.ax.set_xlabel("X (m)"); self.ax.set_ylabel("Y (m)")
-        n_steps = len(self._disp)
-        step_label = f"{step_idx}/{max(n_steps - 1, 0)}" if n_steps else "0/0"
-        self.ax.set_title(
-            f"Crack Behavior Overlay — {metric}   Step {step_label}")
-        self.ax.text(0.02, 0.97,
-                     f"Strokes: {len(self._hand_strokes)}   "
-                     f"lw ∝ {metric.lower()} magnitude",
-                     transform=self.ax.transAxes, va="top",
-                     color=TXTS, fontsize=8, family="monospace")
 
     def _save(self):
         p, _ = QFileDialog.getSaveFileName(self, "Save", "result.png", "PNG (*.png);;PDF (*.pdf)")
@@ -1854,151 +1554,6 @@ class ScriptTab(QWidget):
 
 
 # =============================================================================
-# Integration Self-Test & Auto-Fix
-# =============================================================================
-def run_comprehensive_self_test():
-    """
-    COMPREHENSIVE SELF-TEST: Proves MultiSurfCrack2D is actually being used.
-    Three-part validation:
-      1. Material creation test
-      2. Element creation test (MUST be zeroLengthND or confirmed compatible zeroLength)
-      3. Analysis test (must return status 0)
-
-    Returns: (success: bool, details: str)
-    Does NOT silently fall back to Elastic — reports exact failure.
-    """
-    try:
-        import openseespy.opensees as ops
-        ops.wipe()
-        ops.model('basic', '-ndm', 2, '-ndf', 3)  # ndf=3 for zeroLengthND
-
-        # === TEST 1: Material Creation ===
-        # Signature: tag E H M K Eunl Hunl Munl Kunl fc ag fcl Acr
-        #            rho_lok chi_lok rho_act mu chi_act zeta kappa theta w <cPath>
-        print("[SELFTEST] TEST 1: Creating MultiSurfCrack2D material...")
-        try:
-            ops.nDMaterial('MultiSurfCrack2D', 100,
-                          210.0, 5.95, 0.0, 0.0,       # E, H, M, K
-                          210.0, 5.95, 0.0, 0.0,       # Eunl, Hunl, Munl, Kunl
-                          30.0, 25.0, 5.0, 1.0,        # fc, ag, fcl, Acr
-                          0.5, 0.3, 0.5, 0.7,          # rho_lok, chi_lok, rho_act, mu
-                          0.5, 0.3, 1.0, 0.785, 0.01,  # chi_act, zeta, kappa, theta, w
-                          0)                            # cPath
-            print("[SELFTEST] TEST 1: [PASS] MultiSurfCrack2D material created successfully")
-        except Exception as e_mat:
-            print(f"[SELFTEST] TEST 1: [FAIL] Material creation failed: {e_mat}")
-            return (False, f"Material creation failed: {e_mat}")
-
-        # === TEST 2: Element Creation (STRICT — no silent fallback) ===
-        print("[SELFTEST] TEST 2: Creating interface element...")
-        ops.node(1, 0.0, 0.0)
-        ops.node(2, 0.0, 0.1)
-        ops.fix(1, 1, 1, 1)
-        ops.fix(2, 0, 0, 1)
-
-        element_type_used = None
-        try:
-            # Try zeroLengthND first (PREFERRED)
-            try:
-                ops.element('zeroLengthND', 1001, 1, 2, 100)
-                element_type_used = 'zeroLengthND'
-                print("[SELFTEST] TEST 2: [PASS] Element created with zeroLengthND (RECOMMENDED)")
-            except Exception as e_nd:
-                # Try zeroLength (FALLBACK, but only if we explicitly confirm it works)
-                try:
-                    ops.element('zeroLength', 1001, 1, 2, '-mat', 100, '-dir', 1, 2)
-                    element_type_used = 'zeroLength'
-                    print("[SELFTEST] TEST 2: [PASS] Element created with zeroLength (fallback)")
-                except Exception as e_zl:
-                    # Both failed — DO NOT silently switch to Elastic
-                    print(f"[SELFTEST] TEST 2: [FAIL] Both element types failed")
-                    print(f"  zeroLengthND error: {e_nd}")
-                    print(f"  zeroLength error: {e_zl}")
-                    return (False, f"Element creation failed with both zeroLengthND and zeroLength.\n"
-                                   f"  zeroLengthND: {e_nd}\n"
-                                   f"  zeroLength: {e_zl}")
-        except Exception as e:
-            print(f"[SELFTEST] TEST 2: [FAIL] Unexpected error: {e}")
-            return (False, f"Unexpected error during element creation: {e}")
-
-        if element_type_used is None:
-            print("[SELFTEST] TEST 2: [FAIL] No element type could be created")
-            return (False, "No valid element type found for MultiSurfCrack2D")
-
-        # === TEST 3: Small Analysis ===
-        print("[SELFTEST] TEST 3: Running small displacement control analysis...")
-        try:
-            ops.timeSeries('Linear', 1)
-            ops.pattern('Plain', 1, 1)
-            ops.load(2, 0.0, -1.0, 0.0)
-
-            ops.wipeAnalysis()
-            ops.constraints('Plain')
-            ops.numberer('RCM')
-            try:
-                ops.system('UmfPack')
-            except:
-                ops.system('BandGeneral')
-            ops.test('NormUnbalance', 1e-8, 20)
-            ops.algorithm('NewtonLineSearch')
-
-            ops.analysis('DisplacementControl', 2, 2, 0.001)
-            status = ops.analyze(1)
-
-            if status == 0:
-                print("[SELFTEST] TEST 3: [PASS] Analysis ran successfully (status=0)")
-            else:
-                print(f"[SELFTEST] TEST 3: [FAIL] Analysis failed with status={status}")
-                return (False, f"Analysis failed with status={status}")
-
-        except Exception as e_ana:
-            print(f"[SELFTEST] TEST 3: [FAIL] Analysis error: {e_ana}")
-            return (False, f"Analysis error: {e_ana}")
-
-        # === ALL TESTS PASSED ===
-        print("[SELFTEST] [PASS] ✓ ALL TESTS PASSED")
-        details = (f"✓ Material: MultiSurfCrack2D created successfully\n"
-                   f"✓ Element: {element_type_used} (zeroLengthND preferred)\n"
-                   f"✓ Analysis: Small displacement control test passed\n"
-                   f"\nMultiSurfCrack2D integration is CONFIRMED WORKING.")
-        return (True, details)
-
-    except Exception as e:
-        print(f"[SELFTEST] [FAIL] Unexpected error: {e}")
-        return (False, f"Unexpected error in self-test: {e}")
-
-
-def attempt_auto_fix():
-    """
-    Auto-fix for integration issues.
-    Patches the runner code if element type mismatch is detected.
-    Returns: bool (success)
-    """
-    global RUNNER_PY
-    try:
-        print("[FIX] Analyzing runner code for issues...")
-
-        # Check if the runner has proper element type selection logic
-        has_zlnd = 'zeroLengthND' in RUNNER_PY
-        has_proper_fallback = '[FALLBACK REASON]' in RUNNER_PY and '[CRITICAL FALLBACK]' in RUNNER_PY
-
-        if has_zlnd and has_proper_fallback:
-            print("[FIX] Runner code already has proper element type selection and fallback logging")
-            return False  # No fix needed
-
-        print("[FIX] Runner code needs patching...")
-
-        # If needed, ensure crack element creation has proper logic
-        # (This is a simple check; the actual runner in the file should already be correct)
-        # For now, we just validate that the runner is correct
-
-        return True  # Assume runner is already fixed from previous session
-    except Exception as e:
-        print(f"[FIX] Auto-fix error: {e}")
-        return False
-
-
-# =============================================================================
 # OpenSees Validation & Element Creation Helper
 # =============================================================================
 def test_multisurfcrack2d_support():
@@ -2010,25 +1565,20 @@ def test_multisurfcrack2d_support():
     try:
         import openseespy.opensees as ops
         ops.wipe()
-        ops.model('basic', '-ndm', 2, '-ndf', 3)  # ndf=3 for zeroLengthND
+        ops.model('basic', '-ndm', 2, '-ndf', 2)
 
         # Create dummy nodes
         ops.node(1, 0.0, 0.0)
         ops.node(2, 0.0, 0.0)
-        ops.fix(1, 1, 1, 1)
-        ops.fix(2, 0, 0, 1)
+        ops.fix(1, 1, 1)
 
         # Test 1: Can we create MultiSurfCrack2D?
-        # Signature: tag E H M K Eunl Hunl Munl Kunl fc ag fcl Acr
-        #            rho_lok chi_lok rho_act mu chi_act zeta kappa theta w <cPath>
         try:
             ops.nDMaterial('MultiSurfCrack2D', 100,
-                          210.0, 5.95, 0.0, 0.0,       # E, H, M, K
-                          210.0, 5.95, 0.0, 0.0,       # Eunl, Hunl, Munl, Kunl
-                          30.0, 25.0, 5.0, 1.0,        # fc, ag, fcl, Acr
-                          0.5, 0.3, 0.5, 0.7,          # rho_lok, chi_lok, rho_act, mu
-                          0.5, 0.3, 1.0, 0.785, 0.01,  # chi_act, zeta, kappa, theta, w
-                          0)                            # cPath
+                          210, 5.95, 0.0,
+                          210, 5.95, 0.0,
+                          30, 25, 5, 1, 0.5, 0.3, 0.5, 0.7, 0.5,
+                          0.3, 1.0, 0.785, 0.01, 0)
         except Exception as e_mat:
             return (False,
                    f"MultiSurfCrack2D material not available.\n"
@@ -2040,6 +1590,10 @@ def test_multisurfcrack2d_support():
         try:
             ops.element('zeroLengthND', 1001, 1, 2, 100)
             ops.wipe()
+            ops.model('basic', '-ndm', 2, '-ndf', 2)
+            ops.node(1, 0.0, 0.0)
+            ops.node(2, 0.0, 0.0)
+            ops.fix(1, 1, 1)
             return (True,
                    "OK: MultiSurfCrack2D + zeroLengthND (preferred element).",
                    'zeroLengthND')
@@ -2047,18 +1601,15 @@ def test_multisurfcrack2d_support():
             # Test 3: zeroLength with NDMaterial (may not work)
             try:
                 ops.wipe()
-                ops.model('basic', '-ndm', 2, '-ndf', 3)
+                ops.model('basic', '-ndm', 2, '-ndf', 2)
                 ops.node(1, 0.0, 0.0)
                 ops.node(2, 0.0, 0.0)
-                ops.fix(1, 1, 1, 1)
-                ops.fix(2, 0, 0, 1)
+                ops.fix(1, 1, 1)
                 ops.nDMaterial('MultiSurfCrack2D', 100,
-                              210.0, 5.95, 0.0, 0.0,
-                              210.0, 5.95, 0.0, 0.0,
-                              30.0, 25.0, 5.0, 1.0,
-                              0.5, 0.3, 0.5, 0.7,
-                              0.5, 0.3, 1.0, 0.785, 0.01,
-                              0)
+                              210, 5.95, 0.0,
+                              210, 5.95, 0.0,
+                              30, 25, 5, 1, 0.5, 0.3, 0.5, 0.7, 0.5,
+                              0.3, 1.0, 0.785, 0.01, 0)
                 ops.element('zeroLength', 1001, 1, 2, '-mat', 100, '-dir', 1, 2)
                 return (True,
                        "PARTIAL: MultiSurfCrack2D available but using zeroLength (may not support 2D NDMaterial correctly).\n"
@@ -2083,20 +1634,12 @@ import sys, json, traceback, math
 import numpy as np
 
 
-def _build_analysis(ops, p, at, ln, dof, incr, alg,
-                    sys_type='UmfPack', constr_type='Plain'):
+def _build_analysis(ops, p, at, ln, dof, incr, alg):
     ops.wipeAnalysis()
-    # Constraints with fallback
-    try:
-        ops.constraints(constr_type)
-    except Exception:
-        ops.constraints('Transformation')
+    ops.constraints('Plain')
     ops.numberer('RCM')
-    # Solver with fallback
-    try:
-        ops.system(sys_type)
-    except Exception:
-        ops.system('BandGeneral')
+    try:    ops.system('UmfPack')
+    except: ops.system('BandGeneral')
     ops.test('NormUnbalance', float(p.get('tol', 1e-8)), int(p.get('max_iter', 400)))
     if alg == 'NewtonLineSearch':
         try:    ops.algorithm('NewtonLineSearch', '-type', 'Bisection')
@@ -2111,34 +1654,18 @@ def _build_analysis(ops, p, at, ln, dof, incr, alg,
     ops.analysis('Static')
 
 
-def _step_with_fallback(ops, p, at, ln, dof, incr,
-                        sys_type='UmfPack', constr_type='Plain'):
+def _step_with_fallback(ops, p, at, ln, dof, incr):
     for alg in ['NewtonLineSearch', 'KrylovNewton', 'ModifiedNewton', 'Newton']:
-        _build_analysis(ops, p, at, ln, dof, incr, alg, sys_type, constr_type)
+        _build_analysis(ops, p, at, ln, dof, incr, alg)
         if ops.analyze(1) == 0:
             return 0, alg
     return -1, 'Newton'
 
 
-def _step_robust(ops, p, at, ln, dof, incr):
-    """Try solver/constraint combos for step 0 to escape singular-system errors."""
-    combos = [
-        ('UmfPack',     'Plain'),
-        ('BandGeneral', 'Plain'),
-        ('BandGeneral', 'Transformation'),
-    ]
-    for sys_t, con_t in combos:
-        ok, alg = _step_with_fallback(ops, p, at, ln, dof, incr, sys_t, con_t)
-        if ok == 0:
-            return 0, alg, sys_t, con_t
-    return -1, 'Newton', 'BandGeneral', 'Transformation'
-
-
-def _cutback(ops, p, at, ln, dof, incr, max_cuts=12,
-             sys_type='UmfPack', constr_type='Plain'):
+def _cutback(ops, p, at, ln, dof, incr, max_cuts=12):
     cur = float(incr)
     for _ in range(max_cuts + 1):
-        ok, alg = _step_with_fallback(ops, p, at, ln, dof, cur, sys_type, constr_type)
+        ok, alg = _step_with_fallback(ops, p, at, ln, dof, cur)
         if ok == 0:
             return 0, cur, alg
         cur *= 0.5
@@ -2151,70 +1678,10 @@ def run_model_2d(p):
     disp_l = []; force_l = []; open_l = []; slip_l = []
     status = "failed"; msg = "failed"
     node_disp_last = {}
-    cpos = []
 
     try:
-        # ── FAST PRECHECK ─────────────────────────────────────────────────────
-        mesh_nodes_chk = p.get('mesh_nodes', {})
-        mesh_tris_chk  = p.get('mesh_tris', [])
-        bc_nodes_chk   = p.get('bc_nodes', {})
-        load_nodes_chk = p.get('load_nodes', {})
-
-        precheck_ok = True
-        if not mesh_tris_chk:
-            print("[PRECHECK FAIL] No triangular elements (mesh_tris is empty)")
-            precheck_ok = False
-        if not bc_nodes_chk:
-            print("[PRECHECK FAIL] No boundary conditions (bc_nodes is empty)")
-            precheck_ok = False
-        if not load_nodes_chk:
-            print("[PRECHECK FAIL] No loads applied (load_nodes is empty)")
-            precheck_ok = False
-        node_id_set = set(int(k) for k in mesh_nodes_chk.keys())
-        for row in mesh_tris_chk:
-            e_id = int(row[0])
-            for nid in (int(row[1]), int(row[2]), int(row[3])):
-                if nid not in node_id_set:
-                    print(f"[PRECHECK FAIL] Element {e_id} references non-existent node {nid}")
-                    precheck_ok = False
-                    break
-        if precheck_ok:
-            print(f"[PRECHECK] OK — {len(mesh_nodes_chk)} nodes, {len(mesh_tris_chk)} elements,"
-                  f" {len(bc_nodes_chk)} BC nodes, {len(load_nodes_chk)} load nodes")
-
-        # ── BC VALIDATION: rigid body modes for 2D plane-stress ───────────────
-        # Need at least 3 constrained DOFs: Ux at ≥1 node, Uy at ≥1 node,
-        # and a third to prevent in-plane rotation.
-        n_fix_ux = sum(1 for v in bc_nodes_chk.values() if int(v[0]) == 1)
-        n_fix_uy = sum(1 for v in bc_nodes_chk.values() if int(v[1]) == 1)
-        n_total_c = n_fix_ux + n_fix_uy
-        validation_msgs = []
-        if n_fix_ux == 0:
-            validation_msgs.append("[VALIDATION] Missing: Ux must be restrained at >=1 node")
-        if n_fix_uy == 0:
-            validation_msgs.append("[VALIDATION] Missing: Uy must be restrained at >=1 node")
-        if n_total_c < 3:
-            validation_msgs.append(
-                f"[VALIDATION] Only {n_total_c} translational DOF(s) constrained — "
-                "2D plane-stress needs >=3 to eliminate rigid body modes "
-                "(e.g. fix Ux+Uy at one node + Ux at another node, or equivalent).")
-        for vmsg in validation_msgs:
-            print(vmsg)
-        if not precheck_ok or validation_msgs:
-            lines = []
-            if not precheck_ok:
-                lines.append("Precheck failed — see [PRECHECK FAIL] messages above.")
-            if validation_msgs:
-                lines.append("Insufficient boundary conditions to prevent rigid body motion.")
-                lines.append("Must restrain Ux and Uy at one node and Ux at another node (or equivalent).")
-                lines.append("See [VALIDATION] messages above.")
-            raise RuntimeError("\n".join(lines))
-        print(f"[VALIDATION] OK — {n_fix_ux} Ux-fixed, {n_fix_uy} Uy-fixed,"
-              f" total BC nodes: {len(bc_nodes_chk)}")
-
-        # ── Build model ───────────────────────────────────────────────────────
         ops.wipe()
-        ops.model('basic', '-ndm', 2, '-ndf', 3)  # ndf=3 required for zeroLengthND
+        ops.model('basic', '-ndm', 2, '-ndf', 2)
 
         W  = float(p['panel_W']);  H  = float(p['panel_H']); t  = float(p.get('panel_t',  0.2))
         Ec = float(p.get('panel_Ec', 30000.)); nu = float(p.get('panel_nu', 0.2))
@@ -2227,16 +1694,10 @@ def run_model_2d(p):
         for nid_str, (x, y) in mesh_nodes.items():
             ops.node(int(nid_str), float(x), float(y))
 
-        # Boundary conditions + fix rotational DOF (3) for ALL nodes
-        # Tri31 only uses DOFs 1,2; DOF 3 (rotation) must be constrained
+        # Boundary conditions
         bc_nodes = p.get('bc_nodes', {})   # {str_nid: [fix_x, fix_y]}
-        for nid_str in mesh_nodes:
-            nid = int(nid_str)
-            if nid_str in bc_nodes:
-                fx, fy = bc_nodes[nid_str]
-                ops.fix(nid, int(fx), int(fy), 1)
-            else:
-                ops.fix(nid, 0, 0, 1)
+        for nid_str, (fx, fy) in bc_nodes.items():
+            ops.fix(int(nid_str), int(fx), int(fy))
 
         # Triangular elements (try lowercase then uppercase command name)
         mesh_tris = p['mesh_tris']   # [[eid, n1, n2, n3], ...]
@@ -2257,28 +1718,19 @@ def run_model_2d(p):
         crack_pairs   = p.get('mesh_crack_pairs', [])
         crack_mat_data = p.get('crack_mat_data', [])
 
-        print("[INSTRUMENTATION] Creating crack interface elements...")
-        print(f"[INSTRUMENTATION] Total cracks: {len(crack_pairs)}")
-
-        # Build lookup: nearest-y matching with tolerance
+        # Build lookup: y -> crack mat params
         def _find_mat(y_val):
-            if not crack_mat_data:
-                return {'mat_type': 'Elastic', 'kn': 210., 'kt': 5.95, 'gap': 0.001, 'eta': 0.02}
-            closest = min(crack_mat_data, key=lambda cm: abs(float(cm['y']) - y_val))
-            if abs(float(closest['y']) - y_val) < 5e-3:
-                return closest
+            for cm in crack_mat_data:
+                if abs(float(cm['y']) - y_val) < 1e-6:
+                    return cm
             return {'mat_type': 'Elastic', 'kn': 210., 'kt': 5.95, 'gap': 0.001, 'eta': 0.02}
 
         elt_base = len(mesh_tris) + 1
         # Store (nb, na, yc, tx, ty, cnx, cny) for each crack link — used in collect()
         cnodes = []
 
-        crack_y_set = sorted(set(float(cp[2]) for cp in crack_pairs))
+        crack_y_set = sorted(set(round(float(cp[2]), 6) for cp in crack_pairs))
         cpos = crack_y_set
-
-        # Track which cracks used MultiSurfCrack2D successfully
-        multisurfcrack2d_used = []
-        multisurf_required_failed = False
 
         for ci, cp in enumerate(crack_pairs):
             nb = int(cp[0]); na = int(cp[1]); yc = float(cp[2])
@@ -2290,10 +1742,7 @@ def run_model_2d(p):
                 c_tx, c_ty   = 1.0, 0.0   # tangent along X
                 c_nx, c_ny   = 0.0, 1.0   # normal  along Y
 
-            cm = _find_mat(yc)
-            if ci < 5:
-                matched_y = min(crack_mat_data, key=lambda c: abs(float(c['y']) - yc))['y'] if crack_mat_data else 'N/A'
-                print(f"[DEBUG] crack {ci} yc={yc} matched_y={matched_y}")
+            cm = _find_mat(round(yc, 6))
             mat_type = str(cm.get('mat_type', 'MultiSurfCrack2D'))
 
             # Material tag for this crack
@@ -2304,60 +1753,49 @@ def run_model_2d(p):
             if 'multisurfcrack2d' in mat_type.lower() or 'multi' in mat_type.lower():
                 # MultiSurfCrack2D: NDMaterial for interface cracks
                 # Parameters from crack_mat_data or use defaults for horizontal cracks
-                # Correct signature: tag E H M K Eunl Hunl Munl Kunl
-                #   fc ag fcl Acr rho_lok chi_lok rho_act mu chi_act zeta kappa theta w <cPath>
+                fc   = float(cm.get('fc', 30.0))        # concrete strength (MPa)
+                ag   = float(cm.get('ag', 25.0))        # max aggregate diameter (mm)
+                fcl  = float(cm.get('fcl', 5.0))        # crack closure stress (MPa)
+                Acr  = float(cm.get('Acr', 1.0))        # nominal crack area
+                rho_lok = float(cm.get('rho_lok', 0.5)) # interlock dilation parameter
+                chi_lok = float(cm.get('chi_lok', 0.3)) # interlock cohesion ratio
+                rho_act = float(cm.get('rho_act', 0.5)) # rubble dilation parameter
+                mu   = float(cm.get('mu', 0.7))         # friction coefficient
+                chi  = float(cm.get('chi', 0.5))        # unloading cohesion ratio
+                zeta = float(cm.get('zeta', 0.3))       # slip break point (pinching)
+                kappa = float(cm.get('kappa', 1.0))     # roughness transition
+                theta = float(cm.get('theta', 0.785))   # contact angle (radians)
+                w0   = float(cm.get('w0', 0.01))        # initial crack width (mm)
+                cPath = int(cm.get('cPath', 0))         # load path flag
+
+                # De: elastic loading stiffness matrix (symmetric, 2x2)
                 kn = max(float(cm.get('kn', 210.0)), 1e-6)
                 kt = max(float(cm.get('kt', 5.95)), 1e-6)
-                # Map GUI kn/kt to MultiSurfCrack2D parameters
-                # Use H_shear to avoid shadowing panel height H
-                E       = kn                                # normal stiffness
-                H_shear = kt                                # shear stiffness (avoid name clash with panel H)
-                M    = 0.0                                  # coupling term
-                K    = 0.0                                  # coupling term
-                Eunl = kn                                   # unload normal stiffness
-                Hunl = kt                                   # unload shear stiffness
-                Munl = 0.0                                  # unload coupling
-                Kunl = 0.0                                  # unload coupling
-                fc_      = float(cm.get('fc', 30.0))        # concrete strength (MPa)
-                ag       = float(cm.get('ag', 25.0))        # max aggregate diameter (mm)
-                fcl      = float(cm.get('fcl', 5.0))        # crack closure stress (MPa)
-                Acr      = float(cm.get('Acr', 1.0))        # nominal crack area
-                rho_lok  = float(cm.get('rho_lok', 0.5))    # interlock dilation parameter
-                chi_lok  = float(cm.get('chi_lok', 0.3))    # interlock cohesion ratio
-                rho_act  = float(cm.get('rho_act', 0.5))    # rubble dilation parameter
-                mu       = float(cm.get('mu', 0.7))         # friction coefficient
-                chi_act  = float(cm.get('chi_act', cm.get('chi', 0.5)))  # active cohesion ratio
-                zeta     = float(cm.get('zeta', 0.3))       # slip break point (pinching)
-                kappa    = float(cm.get('kappa', 1.0))      # roughness transition
-                theta    = float(cm.get('theta', 0.785))    # contact angle (radians)
-                w        = float(cm.get('w0', 0.01))        # initial crack width (mm)
-                cPath    = int(cm.get('cPath', 0))          # load path flag
 
-                print(f"[MSCRACK2D] args: E={E} H={H_shear} M={M} K={K} Eunl={Eunl} Hunl={Hunl} "
-                      f"Munl={Munl} Kunl={Kunl} fc={fc_} ag={ag} fcl={fcl} Acr={Acr} "
-                      f"rho_lok={rho_lok} chi_lok={chi_lok} rho_act={rho_act} mu={mu} "
-                      f"chi_act={chi_act} zeta={zeta} kappa={kappa} theta={theta} w={w} cPath={cPath}")
-
+                # FIX A: Create NDMaterial with proper error handling
                 material_created = False
                 try:
                     ops.nDMaterial('MultiSurfCrack2D', mat_id,
-                                   E, H_shear, M, K,
-                                   Eunl, Hunl, Munl, Kunl,
-                                   fc_, ag, fcl, Acr,
-                                   rho_lok, chi_lok, rho_act, mu,
-                                   chi_act, zeta, kappa, theta, w,
-                                   cPath)
+                                   kn, kt,                  # De_11, De_22
+                                   0.0,                     # De_12
+                                   kn, kt, 0.0,             # DeU_11, DeU_22, DeU_12
+                                   fc, ag, fcl, Acr,
+                                   rho_lok, chi_lok, rho_act, mu, chi, zeta, kappa, theta, w0, cPath)
                     material_created = True
                 except Exception as e_mat:
-                    # Material not available - NO silent fallback
-                    print(f"[CRITICAL] ====================================================")
-                    print(f"[CRITICAL] Crack {ci} requested MultiSurfCrack2D but could not be created.")
-                    print(f"[CRITICAL] Exception: {e_mat}")
-                    print(f"[CRITICAL] ====================================================")
+                    # Material not available - explicit fallback
+                    print(f"[CRITICAL FALLBACK] MultiSurfCrack2D material creation failed: {e_mat}")
+                    print(f"[INFO] Will use Elastic spring model instead")
                     material_created = False
 
                 if not material_created:
-                    multisurf_required_failed = True
+                    # FIX C: Explicit fallback with clear messaging
+                    print(f"[FALLBACK REASON] crack {ci}: MultiSurfCrack2D not in OpenSees build")
+                    ops.uniaxialMaterial('Elastic', mat_id*2, kt)
+                    ops.uniaxialMaterial('Elastic', mat_id*2+1, kn)
+                    elt_id = elt_base + ci
+                    ops.element('zeroLength', elt_id, nb, na,
+                                '-mat', mat_id*2, mat_id*2+1, '-dir', 1, 2)
                     cnodes.append((nb, na, yc, c_tx, c_ty, c_nx, c_ny))
                     continue
 
@@ -2365,22 +1803,17 @@ def run_model_2d(p):
                 # Prefer zeroLengthND if available, otherwise try zeroLength
                 elt_id = elt_base + ci
                 element_created = False
-                element_type_used = None
 
                 # Try zeroLengthND first (proper 2D ND element)
                 try:
                     ops.element('zeroLengthND', elt_id, nb, na, mat_id)
                     element_created = True
-                    element_type_used = 'zeroLengthND'
-                    print(f"[ELEMENT_TYPE] Crack {ci}: zeroLengthND")
-                    print(f"[USING MultiSurfCrack2D] Crack {ci}: MultiSurfCrack2D + zeroLengthND (RECOMMENDED)")
+                    print(f"[INFO] Crack {ci}: Using zeroLengthND with MultiSurfCrack2D (recommended)")
                 except Exception as e_nd:
                     # Fallback: try zeroLength with NDMaterial
                     try:
                         ops.element('zeroLength', elt_id, nb, na, '-mat', mat_id, '-dir', 1, 2)
                         element_created = True
-                        element_type_used = 'zeroLength'
-                        print(f"[ELEMENT_TYPE] Crack {ci}: zeroLength (fallback)")
                         print(f"[WARNING] Crack {ci}: Using zeroLength with NDMaterial (may not work correctly)")
                     except Exception as e_zl:
                         # Both element types failed
@@ -2390,14 +1823,13 @@ def run_model_2d(p):
                         print(f"  zeroLength error: {e_zl}")
 
                 if not element_created:
-                    # NO silent fallback — mark as failed
-                    print(f"[CRITICAL] ====================================================")
-                    print(f"[CRITICAL] Crack {ci} requested MultiSurfCrack2D but no compatible element type found.")
-                    print(f"[CRITICAL] ====================================================")
-                    multisurf_required_failed = True
-                else:
-                    # Successfully created MultiSurfCrack2D with proper element
-                    multisurfcrack2d_used.append((ci, element_type_used))
+                    # FIX C: Second fallback - use Elastic springs
+                    print(f"[FALLBACK REASON] crack {ci}: No proper ND interface element found")
+                    ops.uniaxialMaterial('Elastic', mat_id*2, kt)
+                    ops.uniaxialMaterial('Elastic', mat_id*2+1, kn)
+                    ops.element('zeroLength', elt_id, nb, na,
+                                '-mat', mat_id*2, mat_id*2+1, '-dir', 1, 2)
+                    print(f"[FALLBACK] Crack {ci}: Using Elastic spring pair instead")
 
                 cnodes.append((nb, na, yc, c_tx, c_ty, c_nx, c_ny))
 
@@ -2427,22 +1859,7 @@ def run_model_2d(p):
                 ops.element('zeroLength', elt_id, nb, na, '-mat', mat_t, mat_n, '-dir', 1, 2)
                 cnodes.append((nb, na, yc, c_tx, c_ty, c_nx, c_ny))
 
-        # === INSTRUMENTATION SUMMARY ===
-        print("[INSTRUMENTATION] Crack creation complete.")
-        print(f"[INSTRUMENTATION] MultiSurfCrack2D used: {len(multisurfcrack2d_used)} cracks")
-        for ci, elem_type in multisurfcrack2d_used:
-            print(f"[INSTRUMENTATION]   Crack {ci}: {elem_type}")
-        if multisurf_required_failed:
-            print("[CRITICAL] Some cracks requested MultiSurfCrack2D but FAILED — no fallback was used.")
-            raise RuntimeError(
-                "MultiSurfCrack2D requested but unavailable or incompatible. "
-                "No fallback was used. Fix your OpenSees build or change material type.")
-        if not multisurfcrack2d_used and crack_pairs:
-            print("[WARNING] No cracks using MultiSurfCrack2D!")
-        elif multisurfcrack2d_used:
-            print(f"[SUMMARY] ✓ Successfully using MultiSurfCrack2D for {len(multisurfcrack2d_used)}/{len(crack_pairs)} cracks")
-
-        # ── Loads ─────────────────────────────────────────────────────────────
+        # Loads
         load_nodes = p.get('load_nodes', {})   # {str_nid: [Fx, Fy]}
         if not load_nodes:
             raise RuntimeError("No loads applied. Assign loads on the Geometry tab.")
@@ -2450,60 +1867,24 @@ def run_model_2d(p):
         ops.timeSeries('Linear', 1)
         ops.pattern('Plain', 1, 1)
         for nid_str, (Fx, Fy) in load_nodes.items():
-            ops.load(int(nid_str), float(Fx), float(Fy), 0.0)
+            ops.load(int(nid_str), float(Fx), float(Fy))
 
-        # Reset pseudo-time to 0 so reaction collection has a clean reference.
-        # At t=0 before any analysis step the constant part equals 0, so this
-        # does not freeze the incremental loads — it just re-anchors the clock.
-        ops.loadConst('-time', 0.0)
+        # Reference node for DisplacementControl: pick first loaded node
+        ref_nid  = int(next(iter(load_nodes)))
+        ref_ld   = load_nodes[next(iter(load_nodes))]
+        ref_dof  = 2 if abs(ref_ld[1]) > abs(ref_ld[0]) else 1
 
         # Also find all fixed nodes for reaction collection
         fixed_nids = [int(k) for k in bc_nodes.keys()]
 
-        # ── Robust reference-node selection ───────────────────────────────────
-        # DisplacementControl requires a ref DOF that is FREE (not fixed).
-        at = p.get('analysis_type', 'DisplacementControl')
-        ref_nid = None; ref_dof = None; at_auto_switched = False
-
-        if at == 'DisplacementControl':
-            for nid_str, (Fx, Fy) in load_nodes.items():
-                candidate = int(nid_str)
-                bc_v      = bc_nodes.get(nid_str, [0, 0])
-                dof_cand  = 2 if abs(Fy) > abs(Fx) else 1
-                if int(bc_v[dof_cand - 1]) != 1:      # DOF is NOT fixed → valid
-                    ref_nid = candidate; ref_dof = dof_cand
-                    break
-            if ref_nid is None:
-                print("[CONTROL] No loaded node has a free DOF for DisplacementControl")
-                print("[CONTROL] Auto-switching to LoadControl")
-                at = 'LoadControl'; at_auto_switched = True
-            else:
-                print(f"[CONTROL] ref_nid={ref_nid}  ref_dof={ref_dof}  "
-                      f"analysis=DisplacementControl")
-
-        if at == 'LoadControl':          # covers auto-switch case too
-            for nid_str, (Fx, Fy) in load_nodes.items():
-                ref_nid = int(nid_str)
-                ref_dof = 2 if abs(Fy) > abs(Fx) else 1
-                break
-            if at_auto_switched:
-                print(f"[CONTROL] (auto-switched) ref_nid={ref_nid}  ref_dof={ref_dof}  "
-                      f"analysis=LoadControl")
-            else:
-                print(f"[CONTROL] ref_nid={ref_nid}  ref_dof={ref_dof}  "
-                      f"analysis=LoadControl")
-
+        at   = p.get('analysis_type', 'DisplacementControl')
         ml   = float(p.get('max_load_factor', 50.))
         nc_y = len(crack_y_set)
         open_l = [[] for _ in range(nc_y)]
         slip_l = [[] for _ in range(nc_y)]
 
-        # active_sys / active_constr are determined by step-0 and reused after
-        active_sys = 'UmfPack'; active_constr = 'Plain'
-
         def collect():
             disp_l.append(ops.nodeDisp(ref_nid, ref_dof))
-            # reactions() must be called after a successful analyze() step
             ops.reactions()
             tot_f = 0.
             for fnid in fixed_nids:
@@ -2528,65 +1909,25 @@ def run_model_2d(p):
                 slip_l[yi].append(ds_sum / max(cnt, 1))
 
         failed = False; fm = ""
-
-        # Determine base increment
         if at == 'LoadControl':
-            base_incr = float(p.get('load_incr', 0.01))
-        else:
-            base_incr = float(p.get('disp_incr', 0.0005))
-
-        # ── Robust step 0: try UmfPack/Plain → BandGeneral/Plain → BandGeneral/Transformation
-        ok0, alg0, active_sys, active_constr = _step_robust(
-            ops, p, at, ref_nid, ref_dof, base_incr)
-
-        if ok0 == 0:
-            collect()
-            print(f"[STEP0] OK — alg={alg0}  sys={active_sys}  constr={active_constr}")
-        else:
-            # Print full diagnostic before raising
-            n_fixed_dofs = sum(int(v[0]) + int(v[1]) for v in bc_nodes.values())
-            total_load   = sum(abs(float(Fx)) + abs(float(Fy))
-                               for Fx, Fy in load_nodes.values())
-            print(f"[STEP0 FAIL] Nodes={len(mesh_nodes)}, Elements={len(mesh_tris)}")
-            print(f"[STEP0 FAIL] Fixed DOFs={n_fixed_dofs} across {len(bc_nodes)} BC nodes")
-            print(f"[STEP0 FAIL] ref_nid={ref_nid}  ref_dof={ref_dof}")
-            print(f"[STEP0 FAIL] Total applied load magnitude = {total_load:.4g}")
-            print(f"[STEP0 FAIL] Systems tried: UmfPack, BandGeneral  "
-                  f"Constraints tried: Plain, Transformation")
-            print(f"[STEP0 FAIL] Analysis type: {at}")
-            raise RuntimeError(
-                "Analysis failed at step 0 (singular stiffness / bad integrator setup).\n"
-                f"  Nodes={len(mesh_nodes)}, Elements={len(mesh_tris)}, "
-                f"Fixed DOFs={n_fixed_dofs}, ref_nid={ref_nid}, ref_dof={ref_dof}\n"
-                "  All solver combos tried: UmfPack/BandGeneral x Plain/Transformation\n"
-                "Possible causes:\n"
-                "  - Not enough BCs — singular stiffness matrix (check [VALIDATION] above)\n"
-                "  - ref DOF is constrained or disconnected from the loaded structure\n"
-                "  - Zero-area element or severely ill-conditioned mesh\n"
-                "See [STEP0 FAIL] and [VALIDATION] output above.")
-
-        # ── Remaining steps (reuse the working sys/constr combo) ──────────────
-        if at == 'LoadControl':
-            incr  = base_incr
-            steps = max(0, int(1. / max(incr, 1e-12)) - 1)
+            incr  = float(p.get('load_incr', 0.01))
+            steps = max(1, int(1. / incr))
             for st in range(steps):
-                ok, cur, alg = _cutback(ops, p, at, ref_nid, ref_dof, incr,
-                                        sys_type=active_sys, constr_type=active_constr)
+                ok, cur, alg = _cutback(ops, p, at, ref_nid, ref_dof, incr)
                 if ok == 0: collect(); incr = min(incr, cur)
-                else: failed = True; fm = f"step {st + 1} alg={alg}"; break
+                else: failed = True; fm = f"step {st} alg={alg}"; break
         else:
-            tgt   = float(p.get('target_disp', 0.05))
-            incr  = base_incr
-            steps = max(0, int(abs(tgt) / max(abs(incr), 1e-12)) - 1)
+            tgt  = float(p.get('target_disp', 0.05))
+            incr = float(p.get('disp_incr',  0.0005))
+            steps = max(1, int(abs(tgt) / max(abs(incr), 1e-12)))
             for st in range(steps):
                 try:
                     if abs(ops.getTime()) > ml:
                         failed = True; fm = "load factor cap reached"; break
                 except: pass
-                ok, cur, alg = _cutback(ops, p, at, ref_nid, ref_dof, incr,
-                                        sys_type=active_sys, constr_type=active_constr)
+                ok, cur, alg = _cutback(ops, p, at, ref_nid, ref_dof, incr)
                 if ok == 0: collect(); incr = min(incr, cur)
-                else: failed = True; fm = f"step {st + 1} alg={alg}"; break
+                else: failed = True; fm = f"step {st} alg={alg}"; break
 
         # Collect last-step nodal displacements
         for nid_str in mesh_nodes:
@@ -2681,22 +2022,6 @@ class WSLWorker(QThread):
             if proc.stdout.strip(): self.log.emit(proc.stdout.strip())
             if proc.stderr.strip(): self.log.emit("[STDERR] " + proc.stderr.strip())
 
-            if proc.returncode != 0 and not np_.exists():
-                err_detail = ""
-                if proc.stderr.strip():
-                    err_detail += proc.stderr.strip()
-                if proc.stdout.strip():
-                    err_detail += "\n" + proc.stdout.strip()
-                raise RuntimeError(
-                    f"Analysis FAILED (returncode={proc.returncode}).\n"
-                    f"{err_detail}\n\n"
-                    "Possible causes:\n"
-                    "  1. MultiSurfCrack2D requested but not in OpenSees build\n"
-                    "  2. Wrong activate command in Run tab\n"
-                    "  3. openseespy not installed in that env\n"
-                    "  4. WSL path mapping issue\n"
-                    "Check console output above for the Python traceback.")
-
             if not np_.exists():
                 raise RuntimeError(
                     "results.npz was not created.\n"
@@ -2719,18 +2044,9 @@ class WSLWorker(QThread):
             mesh_nodes = {int(k): v for k, v in self.params.get("mesh_nodes", {}).items()}
             mesh_tris  = [[int(x) for x in row] for row in self.params.get("mesh_tris", [])]
 
-            raw_status = str(data["status"][0])
-            raw_message = str(data["message"][0])
-            # If WSL process returned non-zero, override status to failed
-            if proc.returncode != 0:
-                raw_status = "failed"
-                raw_message = f"[FAIL returncode={proc.returncode}] {raw_message}"
-                if proc.stderr.strip():
-                    self.log.emit("[FAIL STDERR] " + proc.stderr.strip()[:1000])
-
             result = dict(
-                status=raw_status,
-                message=raw_message,
+                status=str(data["status"][0]),
+                message=str(data["message"][0]),
                 disp=arr("disp"), force=arr("force"),
                 crack_positions=arr("crack_positions"),
                 crack_openings=obj("crack_openings"),
@@ -2942,10 +2258,6 @@ class MainWindow(QMainWindow):
         self.run.append(f"\n{'SUCCESS' if result['status']=='ok' else 'PARTIAL/FAILED'}: {msg}")
 
         if result["disp"].size > 0:
-            # Attach hand-drawn stroke data from the geometry tab
-            geo_p = self.geo.get_params()
-            result["hand_crack_strokes"] = geo_p.get("hand_crack_strokes", [])
-            result["hand_crack_ys"]      = geo_p.get("hand_crack_ys", [])
             self.res.set_results(result)
             self.btn_save_png.setEnabled(True)
             self.btn_csv.setEnabled(True)

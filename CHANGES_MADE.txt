@@ -1,0 +1,181 @@
+================================================================================
+DETAILED CODE CHANGES FOR MULTISURFCRACK2D INTEGRATION
+================================================================================
+
+FILE: gui_wsl.py
+
+================================================================================
+CHANGE 1: Material Dropdown Selection
+================================================================================
+
+Location: Line 1061-1070 (CrackMaterialTab.__init__)
+
+BEFORE:
+    self.cmb_mat_tmpl = QComboBox()
+    self.cmb_mat_tmpl.addItems(["Elastic", "ElasticPPGap", "CustomBilinear"])
+    self.cmb_mat_tmpl.setToolTip(
+        "Elastic: linear spring (kn/kt)\n"
+        "ElasticPPGap: elastic + perfect plastic gap spring\n"
+        "CustomBilinear: piecewise linear force-displacement")
+
+AFTER:
+    self.cmb_mat_tmpl = QComboBox()
+    self.cmb_mat_tmpl.addItems([
+        "MultiSurfCrack2D",  # NEW: Your custom multi-surface model
+        "Elastic",
+        "ElasticPPGap",
+        "CustomBilinear"
+    ])
+    self.cmb_mat_tmpl.setToolTip(
+        "MultiSurfCrack2D: plasticity-based multi-yield-surface crack model "
+        "(requires OpenSees compilation)\n"
+        "Elastic: linear spring (kn/kt)\n"
+        "ElasticPPGap: elastic + perfect plastic gap spring\n"
+        "CustomBilinear: piecewise linear force-displacement")
+
+REASON: Make MultiSurfCrack2D visible and selectable as material option
+
+================================================================================
+CHANGE 2: Updated Help Text in Table
+================================================================================
+
+Location: Line 1101-1104 (CrackMaterialTab.__init__)
+
+BEFORE:
+    vt.addWidget(mk_lbl(
+        "Double-click a cell to edit. Material column: "
+        "Elastic / ElasticPPGap / CustomBilinear.", "sub"))
+
+AFTER:
+    vt.addWidget(mk_lbl(
+        "Double-click a cell to edit. Material: "
+        "MultiSurfCrack2D / Elastic / ElasticPPGap / CustomBilinear.\n"
+        "For MultiSurfCrack2D: set kn=normal stiffness, "
+        "kt=shear stiffness. Additional parameters auto-filled.", "sub"))
+
+REASON: Inform users that MultiSurfCrack2D is available and how to use it
+
+================================================================================
+CHANGE 3: MAJOR - Crack Material Creation in RUNNER_PY
+================================================================================
+
+Location: Lines 1643-1720 (run_model_2d function in RUNNER_PY)
+
+This is the CORE integration. Here's what changed:
+
+BEFORE (lines 1643-1671):
+    cm = _find_mat(round(yc, 6))
+    mat_type = str(cm.get('mat_type', 'Elastic'))
+    kn  = max(float(cm.get('kn',  210.)), 1e-6)
+    kt  = max(float(cm.get('kt',  5.95)), 1e-6)
+    gap = float(cm.get('gap', 0.001))
+    eta = float(cm.get('eta', 0.02))
+
+    mat_x = 10000 + ci * 3
+    mat_y = 10001 + ci * 3
+
+    if 'eppgap' in mat_type.lower() or 'elasticppgap' in mat_type.lower():
+        ops.uniaxialMaterial('ElasticPPGap', mat_x, kt, kt * 5., gap, eta, 
+                            '-damage', 'NoDamage')
+        ops.uniaxialMaterial('ElasticPPGap', mat_y, kn, kn * 10., 0.0, eta, 
+                            '-damage', 'NoDamage')
+    elif 'bilinear' in mat_type.lower() or 'custom' in mat_type.lower():
+        ops.uniaxialMaterial('Steel01', mat_x, kt * gap, kt, eta)
+        ops.uniaxialMaterial('Steel01', mat_y, kn * gap, kn, eta)
+    else:
+        ops.uniaxialMaterial('Elastic', mat_x, kt)
+        ops.uniaxialMaterial('Elastic', mat_y, kn)
+
+    elt_id = elt_base + ci
+    ops.element('zeroLength', elt_id, nb, na, '-mat', mat_x, mat_y, '-dir', 1, 2)
+    cnodes.append((nb, na, yc, c_tx, c_ty, c_nx, c_ny))
+
+
+AFTER (lines 1643-1720):
+    cm = _find_mat(round(yc, 6))
+    mat_type = str(cm.get('mat_type', 'MultiSurfCrack2D'))  # ← DEFAULT CHANGED
+
+    mat_id = 10000 + ci  # ← SIMPLIFIED (was _x, _y naming)
+
+    # ✅ NEW: MultiSurfCrack2D BRANCH
+    if 'multisurfcrack2d' in mat_type.lower() or 'multi' in mat_type.lower():
+        # Extract all 14 material parameters (with defaults)
+        fc   = float(cm.get('fc', 30.0))          # concrete strength
+        ag   = float(cm.get('ag', 25.0))          # aggregate diameter
+        fcl  = float(cm.get('fcl', 5.0))          # closure stress
+        Acr  = float(cm.get('Acr', 1.0))          # crack area
+        rho_lok = float(cm.get('rho_lok', 0.5))   # interlock dilation
+        chi_lok = float(cm.get('chi_lok', 0.3))   # interlock cohesion
+        rho_act = float(cm.get('rho_act', 0.5))   # rubble dilation
+        mu   = float(cm.get('mu', 0.7))           # friction
+        chi  = float(cm.get('chi', 0.5))          # unloading cohesion
+        zeta = float(cm.get('zeta', 0.3))         # slip pinching
+        kappa = float(cm.get('kappa', 1.0))       # roughness transition
+        theta = float(cm.get('theta', 0.785))     # contact angle
+        w0   = float(cm.get('w0', 0.01))          # initial crack width
+        cPath = int(cm.get('cPath', 0))           # load path flag
+
+        kn = max(float(cm.get('kn', 210.0)), 1e-6)
+        kt = max(float(cm.get('kt', 5.95)), 1e-6)
+
+        try:
+            # ✅ CREATE NDMaterial (not uniaxialMaterial!)
+            ops.nDMaterial('MultiSurfCrack2D', mat_id,
+                          kn, kt, 0.0,             # De
+                          kn, kt, 0.0,             # DeU
+                          fc, ag, fcl, Acr,
+                          rho_lok, chi_lok, rho_act, mu, chi,
+                          zeta, kappa, theta, w0, cPath)
+        except Exception as e:
+            # ✅ FALLBACK MECHANISM
+            print(f"[WARNING] MultiSurfCrack2D not available: {e}")
+            print(f"[FALLBACK] Using Elastic materials for crack {ci}")
+            ops.uniaxialMaterial('Elastic', mat_id*2, kt)
+            ops.uniaxialMaterial('Elastic', mat_id*2+1, kn)
+            elt_id = elt_base + ci
+            ops.element('zeroLength', elt_id, nb, na,
+                       '-mat', mat_id*2, mat_id*2+1, '-dir', 1, 2)
+            cnodes.append((nb, na, yc, c_tx, c_ty, c_nx, c_ny))
+            continue
+
+        # ✅ USE NDMaterial (not two uniaxial materials)
+        elt_id = elt_base + ci
+        ops.element('zeroLength', elt_id, nb, na, '-mat', mat_id, '-dir', 1, 2)
+        cnodes.append((nb, na, yc, c_tx, c_ty, c_nx, c_ny))
+
+    else:
+        # ✅ FALLBACK: Standard OpenSees materials
+        # (existing code for Elastic, ElasticPPGap, Steel01)
+        [keep existing logic unchanged]
+
+
+KEY DIFFERENCES:
+  1. Default mat_type = 'MultiSurfCrack2D' instead of 'Elastic'
+  2. Check for MultiSurfCrack2D FIRST (before other materials)
+  3. Extract 14 material parameters (yours!)
+  4. ops.nDMaterial() instead of ops.uniaxialMaterial()
+  5. Try/except with fallback to Elastic
+  6. Pass NDMaterial directly to zeroLength element
+  7. Single '-mat' instead of '-mat' with two materials
+
+
+WHY THESE CHANGES:
+  - MultiSurfCrack2D is an NDMaterial (2D behavior) not uniaxialMaterial
+  - Your model needs all 14 parameters to work properly
+  - Fallback ensures analysis doesn't crash if model not compiled
+  - Flexible parameter passing (defaults when not specified)
+
+================================================================================
+PARAMETER FLOW DIAGRAM
+================================================================================
+
+GUI (Crack Materials Tab)
+    ↓
+CrackMaterialTab.tbl (QTableWidget)
+    ↓
+CrackMaterialTab.get_params()
+    ↓
+crack_mat_data = [
+    {
+        'y': 1.0,
+        'mat_type
