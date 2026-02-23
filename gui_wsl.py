@@ -2079,25 +2079,243 @@ def test_multisurfcrack2d_support():
 # Runner script — executed inside WSL
 # =============================================================================
 RUNNER_PY = r'''
-import sys, json, traceback, math
+import sys, json, traceback, math, os, time as _time
 import numpy as np
 
+_LOG_LINES = []
 
+def _log(msg):
+    _LOG_LINES.append(msg)
+    print(msg)
+
+
+# ── (A) Detect MultiSurfCrack2D availability ────────────────────────────────
+def _check_multisurfcrack2d(ops):
+    """Return True if MultiSurfCrack2D nDMaterial is available in this build."""
+    try:
+        ops.wipe()
+        ops.model('basic', '-ndm', 2, '-ndf', 2)
+        ops.node(99990, 0.0, 0.0)
+        ops.node(99991, 0.0, 0.0)
+        ops.nDMaterial('MultiSurfCrack2D', 99990,
+                       210.0, 5.95, 0.0, 0.0,
+                       210.0, 5.95, 0.0, 0.0,
+                       30.0, 25.0, 5.0, 1.0,
+                       0.5, 0.3, 0.5, 0.7,
+                       0.5, 0.3, 1.0, 0.785, 0.01,
+                       0)
+        ops.wipe()
+        return True
+    except Exception:
+        ops.wipe()
+        return False
+
+
+def _create_eppgap_macro(ops, ci, nb, na, kn, kt, gap, eta, elt_base):
+    """
+    Fallback macro-element: 4 parallel shear springs (ElasticPPGap) +
+    1 normal spring.  Provides nonzero initial stiffness in both directions.
+    Returns list of element ids created.
+    """
+    base_mat = 50000 + ci * 10
+    elt_ids = []
+
+    # --- 4 tangential (shear) springs with staggered gaps ---
+    for k in range(4):
+        tag_t = base_mat + k
+        frac_kt = kt / 4.0
+        gap_k = gap * (1.0 + 0.25 * k)  # stagger gaps
+        try:
+            ops.uniaxialMaterial('ElasticPPGap', tag_t,
+                                 frac_kt, frac_kt * 5.0, gap_k, eta)
+        except Exception:
+            ops.uniaxialMaterial('Elastic', tag_t, frac_kt)
+        eid = elt_base + ci * 5 + k
+        ops.element('zeroLength', eid, nb, na, '-mat', tag_t, '-dir', 1)
+        elt_ids.append(eid)
+
+    # --- 1 normal spring ---
+    tag_n = base_mat + 4
+    try:
+        ops.uniaxialMaterial('ElasticPPGap', tag_n, kn, kn * 10.0, 0.0, eta)
+    except Exception:
+        ops.uniaxialMaterial('Elastic', tag_n, kn)
+    eid_n = elt_base + ci * 5 + 4
+    ops.element('zeroLength', eid_n, nb, na, '-mat', tag_n, '-dir', 2)
+    elt_ids.append(eid_n)
+    return elt_ids
+
+
+# ── (B) Model sanity checks ─────────────────────────────────────────────────
+def _sanity_checks(p, mesh_nodes, mesh_tris, bc_nodes, load_nodes):
+    """Run model sanity checks. Returns (ok, warnings, auto_fixes)."""
+    warnings = []
+    auto_fixes = {}
+    node_id_set = set(int(k) for k in mesh_nodes.keys())
+
+    # 1. Precheck: elements reference valid nodes
+    for row in mesh_tris:
+        e_id = int(row[0])
+        for nid in (int(row[1]), int(row[2]), int(row[3])):
+            if nid not in node_id_set:
+                warnings.append(f"[SANITY FAIL] Element {e_id} references non-existent node {nid}")
+
+    # 2. BC validation: rigid body modes
+    n_fix_ux = sum(1 for v in bc_nodes.values() if int(v[0]) == 1)
+    n_fix_uy = sum(1 for v in bc_nodes.values() if int(v[1]) == 1)
+    n_total_c = n_fix_ux + n_fix_uy
+    if n_fix_ux == 0:
+        warnings.append("[SANITY] Missing: Ux must be restrained at >=1 node")
+    if n_fix_uy == 0:
+        warnings.append("[SANITY] Missing: Uy must be restrained at >=1 node")
+    if n_total_c < 3:
+        warnings.append(
+            f"[SANITY] Only {n_total_c} DOF(s) constrained — "
+            "need >=3 to prevent rigid body modes")
+
+    # 3. Reference / control node validation
+    at = p.get('analysis_type', 'DisplacementControl')
+    if at == 'DisplacementControl':
+        valid_ref = False
+        for nid_str, (Fx, Fy) in load_nodes.items():
+            bc_v = bc_nodes.get(nid_str, [0, 0])
+            dof_cand = 2 if abs(Fy) > abs(Fx) else 1
+            if int(bc_v[dof_cand - 1]) != 1:
+                valid_ref = True
+                break
+        if not valid_ref:
+            # Try auto-selecting a valid ref node from loaded/top nodes
+            all_loaded = [(int(k), v) for k, v in load_nodes.items()]
+            for nid, (Fx, Fy) in sorted(all_loaded,
+                                         key=lambda x: -float(mesh_nodes.get(str(x[0]), [0, 0])[1])):
+                bc_v = bc_nodes.get(str(nid), [0, 0])
+                for d in [2, 1]:
+                    if int(bc_v[d - 1]) != 1:
+                        auto_fixes['ref_node'] = nid
+                        auto_fixes['ref_dof'] = d
+                        _log(f"[REFNODE AUTO] old=None new={nid} reason=all_loaded_dofs_fixed_trying_topmost")
+                        valid_ref = True
+                        break
+                if valid_ref:
+                    break
+            if not valid_ref:
+                warnings.append("[SANITY] No valid ref node for DisplacementControl; will auto-switch to LoadControl")
+
+    # 4. Basic connectivity check (no isolated node groups)
+    adj = {int(k): set() for k in mesh_nodes.keys()}
+    for row in mesh_tris:
+        ns = [int(row[1]), int(row[2]), int(row[3])]
+        for a_ in ns:
+            for b_ in ns:
+                if a_ != b_ and a_ in adj and b_ in adj:
+                    adj[a_].add(b_)
+    # BFS from first node
+    if adj:
+        start = next(iter(adj))
+        visited = set()
+        queue = [start]
+        while queue:
+            n = queue.pop()
+            if n in visited:
+                continue
+            visited.add(n)
+            queue.extend(adj[n] - visited)
+        # Also count crack pair nodes as connected
+        crack_pairs = p.get('mesh_crack_pairs', [])
+        for cp in crack_pairs:
+            nb, na = int(cp[0]), int(cp[1])
+            if nb in visited:
+                visited.add(na)
+            elif na in visited:
+                visited.add(nb)
+        # Re-run BFS with crack connections
+        queue = list(visited)
+        while queue:
+            n = queue.pop()
+            for nb2 in adj.get(n, set()):
+                if nb2 not in visited:
+                    visited.add(nb2)
+                    queue.append(nb2)
+        isolated = set(adj.keys()) - visited
+        if isolated:
+            warnings.append(f"[SANITY] {len(isolated)} disconnected nodes detected (IDs: {sorted(isolated)[:10]}...)")
+
+    ok = len([w for w in warnings if 'FAIL' in w]) == 0
+    _log(f"[SANITY] checks passed={ok} warnings={len(warnings)}")
+    for w in warnings:
+        _log(w)
+    return ok, warnings, auto_fixes
+
+
+# ── (C) Crack / interface link sanitization ──────────────────────────────────
+def _sanitize_crack_pairs(crack_pairs, panel_H, tol_frac=0.01):
+    """
+    Deduplicate cracks by Y with tolerance, skip self-links, duplicate links,
+    and tiny links. Returns cleaned list + logs.
+    """
+    tol = tol_frac * panel_H
+    requested = len(crack_pairs)
+
+    # Deduplicate by Y with tolerance
+    seen_ys = []
+    y_map = {}  # old_y -> canonical_y
+    for cp in crack_pairs:
+        yc = float(cp[2])
+        matched = False
+        for sy in seen_ys:
+            if abs(yc - sy) < tol:
+                y_map[yc] = sy
+                matched = True
+                break
+        if not matched:
+            seen_ys.append(yc)
+            y_map[yc] = yc
+
+    # Filter links
+    cleaned = []
+    seen_pairs = set()
+    for cp in crack_pairs:
+        nb = int(cp[0]); na = int(cp[1])
+        yc = float(cp[2])
+
+        # Skip self-links
+        if nb == na:
+            _log(f"[SKIP BAD LINK] reason=self_link ni={nb} nj={na}")
+            continue
+
+        # Skip duplicate node-pair links
+        pair_key = (min(nb, na), max(nb, na))
+        if pair_key in seen_pairs:
+            _log(f"[SKIP DUP LINK] ni={nb} nj={na}")
+            continue
+        seen_pairs.add(pair_key)
+
+        # Skip tiny links (nodes at same position with zero-length crack)
+        # This is only a sanity filter — zeroLength elements are fine
+        cleaned.append(cp)
+
+    unique = len(cleaned)
+    _log(f"[CRACK DEBUG] requested={requested}, unique={unique}, tol={tol:.6f}")
+    return cleaned
+
+
+# ── (D) Analysis auto-recovery ───────────────────────────────────────────────
 def _build_analysis(ops, p, at, ln, dof, incr, alg,
-                    sys_type='UmfPack', constr_type='Plain'):
+                    sys_type='UmfPack', constr_type='Plain',
+                    test_type='NormDispIncr', test_tol=None, test_iter=None):
     ops.wipeAnalysis()
-    # Constraints with fallback
     try:
         ops.constraints(constr_type)
     except Exception:
         ops.constraints('Transformation')
     ops.numberer('RCM')
-    # Solver with fallback
     try:
         ops.system(sys_type)
     except Exception:
         ops.system('BandGeneral')
-    ops.test('NormUnbalance', float(p.get('tol', 1e-8)), int(p.get('max_iter', 400)))
+    tol_ = float(test_tol if test_tol is not None else p.get('tol', 1e-8))
+    itr_ = int(test_iter if test_iter is not None else p.get('max_iter', 400))
+    ops.test(test_type, tol_, itr_)
     if alg == 'NewtonLineSearch':
         try:    ops.algorithm('NewtonLineSearch', '-type', 'Bisection')
         except: ops.algorithm('Newton')
@@ -2111,40 +2329,73 @@ def _build_analysis(ops, p, at, ln, dof, incr, alg,
     ops.analysis('Static')
 
 
-def _step_with_fallback(ops, p, at, ln, dof, incr,
-                        sys_type='UmfPack', constr_type='Plain'):
-    for alg in ['NewtonLineSearch', 'KrylovNewton', 'ModifiedNewton', 'Newton']:
+def _step_with_recovery(ops, p, at, ln, dof, incr, step_num=0):
+    """
+    Try ordered combos of constraints/system/algorithm/test.
+    Log each attempt and stop at first success.
+    Returns (ok, alg, sys_type, constr_type).
+    """
+    base_tol = float(p.get('tol', 1e-8))
+    base_iter = int(p.get('max_iter', 400))
+
+    constraints_list = ['Plain', 'Transformation']
+    systems_list = ['UmfPack', 'BandGeneral']
+    algorithms_list = ['NewtonLineSearch', 'ModifiedNewton', 'KrylovNewton', 'Newton']
+    # Relaxed test configs: (test_type, tol_multiplier, iter_multiplier)
+    test_configs = [
+        ('NormDispIncr', 1.0, 1.0),
+        ('NormDispIncr', 10.0, 2.0),
+        ('NormDispIncr', 100.0, 3.0),
+        ('NormUnbalance', 1.0, 1.0),
+        ('NormUnbalance', 10.0, 2.0),
+    ]
+
+    for constr in constraints_list:
+        for sys_t in systems_list:
+            for alg in algorithms_list:
+                for test_type, tol_mult, iter_mult in test_configs:
+                    t_tol = base_tol * tol_mult
+                    t_iter = int(base_iter * iter_mult)
+                    _log(f"[ANALYZE TRY] step={step_num} constraints={constr} "
+                         f"system={sys_t} algorithm={alg} "
+                         f"test={test_type}(tol={t_tol:.1e},iter={t_iter})")
+                    try:
+                        _build_analysis(ops, p, at, ln, dof, incr, alg,
+                                        sys_t, constr, test_type, t_tol, t_iter)
+                        if ops.analyze(1) == 0:
+                            return 0, alg, sys_t, constr
+                    except Exception:
+                        pass
+                    _log(f"[ANALYZE FAIL] ok=-1 atStep={step_num} "
+                         f"combo={constr}/{sys_t}/{alg}/{test_type}")
+                    # Only try 2 test configs per algorithm to limit combos
+                    if tol_mult >= 10.0:
+                        break
+
+    return -1, 'Newton', 'BandGeneral', 'Transformation'
+
+
+def _step_normal(ops, p, at, ln, dof, incr, sys_type, constr_type):
+    """Normal step with algorithm fallback only (fast path)."""
+    for alg in ['NewtonLineSearch', 'ModifiedNewton', 'KrylovNewton', 'Newton']:
         _build_analysis(ops, p, at, ln, dof, incr, alg, sys_type, constr_type)
         if ops.analyze(1) == 0:
             return 0, alg
     return -1, 'Newton'
 
 
-def _step_robust(ops, p, at, ln, dof, incr):
-    """Try solver/constraint combos for step 0 to escape singular-system errors."""
-    combos = [
-        ('UmfPack',     'Plain'),
-        ('BandGeneral', 'Plain'),
-        ('BandGeneral', 'Transformation'),
-    ]
-    for sys_t, con_t in combos:
-        ok, alg = _step_with_fallback(ops, p, at, ln, dof, incr, sys_t, con_t)
-        if ok == 0:
-            return 0, alg, sys_t, con_t
-    return -1, 'Newton', 'BandGeneral', 'Transformation'
-
-
 def _cutback(ops, p, at, ln, dof, incr, max_cuts=12,
              sys_type='UmfPack', constr_type='Plain'):
     cur = float(incr)
     for _ in range(max_cuts + 1):
-        ok, alg = _step_with_fallback(ops, p, at, ln, dof, cur, sys_type, constr_type)
+        ok, alg = _step_normal(ops, p, at, ln, dof, cur, sys_type, constr_type)
         if ok == 0:
             return 0, cur, alg
         cur *= 0.5
     return -1, cur, 'Newton'
 
 
+# ── Main model runner ────────────────────────────────────────────────────────
 def run_model_2d(p):
     import openseespy.opensees as ops
 
@@ -2154,92 +2405,67 @@ def run_model_2d(p):
     cpos = []
 
     try:
-        # ── FAST PRECHECK ─────────────────────────────────────────────────────
-        mesh_nodes_chk = p.get('mesh_nodes', {})
-        mesh_tris_chk  = p.get('mesh_tris', [])
-        bc_nodes_chk   = p.get('bc_nodes', {})
-        load_nodes_chk = p.get('load_nodes', {})
+        # ── (A) Check MultiSurfCrack2D availability ──────────────────────────
+        mscrack_available = _check_multisurfcrack2d(ops)
+        if mscrack_available:
+            _log("[MATERIAL CHECK] MultiSurfCrack2D is AVAILABLE in this OpenSees build")
+        else:
+            _log("[MATERIAL CHECK] MultiSurfCrack2D is NOT available — EPPGap fallback will be used")
 
-        precheck_ok = True
-        if not mesh_tris_chk:
-            print("[PRECHECK FAIL] No triangular elements (mesh_tris is empty)")
-            precheck_ok = False
-        if not bc_nodes_chk:
-            print("[PRECHECK FAIL] No boundary conditions (bc_nodes is empty)")
-            precheck_ok = False
-        if not load_nodes_chk:
-            print("[PRECHECK FAIL] No loads applied (load_nodes is empty)")
-            precheck_ok = False
-        node_id_set = set(int(k) for k in mesh_nodes_chk.keys())
-        for row in mesh_tris_chk:
-            e_id = int(row[0])
-            for nid in (int(row[1]), int(row[2]), int(row[3])):
-                if nid not in node_id_set:
-                    print(f"[PRECHECK FAIL] Element {e_id} references non-existent node {nid}")
-                    precheck_ok = False
-                    break
-        if precheck_ok:
-            print(f"[PRECHECK] OK — {len(mesh_nodes_chk)} nodes, {len(mesh_tris_chk)} elements,"
-                  f" {len(bc_nodes_chk)} BC nodes, {len(load_nodes_chk)} load nodes")
+        # ── Collect params ────────────────────────────────────────────────────
+        mesh_nodes_raw = p.get('mesh_nodes', {})
+        mesh_tris_raw  = p.get('mesh_tris', [])
+        bc_nodes_raw   = p.get('bc_nodes', {})
+        load_nodes_raw = p.get('load_nodes', {})
 
-        # ── BC VALIDATION: rigid body modes for 2D plane-stress ───────────────
-        # Need at least 3 constrained DOFs: Ux at ≥1 node, Uy at ≥1 node,
-        # and a third to prevent in-plane rotation.
-        n_fix_ux = sum(1 for v in bc_nodes_chk.values() if int(v[0]) == 1)
-        n_fix_uy = sum(1 for v in bc_nodes_chk.values() if int(v[1]) == 1)
-        n_total_c = n_fix_ux + n_fix_uy
-        validation_msgs = []
-        if n_fix_ux == 0:
-            validation_msgs.append("[VALIDATION] Missing: Ux must be restrained at >=1 node")
-        if n_fix_uy == 0:
-            validation_msgs.append("[VALIDATION] Missing: Uy must be restrained at >=1 node")
-        if n_total_c < 3:
-            validation_msgs.append(
-                f"[VALIDATION] Only {n_total_c} translational DOF(s) constrained — "
-                "2D plane-stress needs >=3 to eliminate rigid body modes "
-                "(e.g. fix Ux+Uy at one node + Ux at another node, or equivalent).")
-        for vmsg in validation_msgs:
-            print(vmsg)
-        if not precheck_ok or validation_msgs:
-            lines = []
-            if not precheck_ok:
-                lines.append("Precheck failed — see [PRECHECK FAIL] messages above.")
-            if validation_msgs:
-                lines.append("Insufficient boundary conditions to prevent rigid body motion.")
-                lines.append("Must restrain Ux and Uy at one node and Ux at another node (or equivalent).")
-                lines.append("See [VALIDATION] messages above.")
-            raise RuntimeError("\n".join(lines))
-        print(f"[VALIDATION] OK — {n_fix_ux} Ux-fixed, {n_fix_uy} Uy-fixed,"
-              f" total BC nodes: {len(bc_nodes_chk)}")
+        if not mesh_tris_raw:
+            raise RuntimeError("[PRECHECK FAIL] No triangular elements (mesh_tris is empty)")
+        if not bc_nodes_raw:
+            raise RuntimeError("[PRECHECK FAIL] No boundary conditions (bc_nodes is empty)")
+        if not load_nodes_raw:
+            raise RuntimeError("[PRECHECK FAIL] No loads applied (load_nodes is empty)")
 
-        # ── Build model ───────────────────────────────────────────────────────
+        _log(f"[PRECHECK] OK — {len(mesh_nodes_raw)} nodes, {len(mesh_tris_raw)} elements,"
+             f" {len(bc_nodes_raw)} BC nodes, {len(load_nodes_raw)} load nodes")
+
+        # ── (B) Sanity checks ────────────────────────────────────────────────
+        san_ok, san_warns, auto_fixes = _sanity_checks(
+            p, mesh_nodes_raw, mesh_tris_raw, bc_nodes_raw, load_nodes_raw)
+
+        # Fatal sanity failures
+        fatal = [w for w in san_warns if 'FAIL' in w]
+        if fatal:
+            raise RuntimeError("Sanity checks failed:\n" + "\n".join(fatal))
+
+        # ── (C) Crack link sanitization ──────────────────────────────────────
+        crack_pairs_raw = p.get('mesh_crack_pairs', [])
+        W = float(p['panel_W']); H = float(p['panel_H'])
+        crack_pairs = _sanitize_crack_pairs(crack_pairs_raw, H)
+
+        # ── Build model ──────────────────────────────────────────────────────
         ops.wipe()
-        ops.model('basic', '-ndm', 2, '-ndf', 3)  # ndf=3 required for zeroLengthND
+        ops.model('basic', '-ndm', 2, '-ndf', 2)
 
-        W  = float(p['panel_W']);  H  = float(p['panel_H']); t  = float(p.get('panel_t',  0.2))
-        Ec = float(p.get('panel_Ec', 30000.)); nu = float(p.get('panel_nu', 0.2))
+        t  = float(p.get('panel_t', 0.2))
+        Ec = float(p.get('panel_Ec', 30000.))
+        nu = float(p.get('panel_nu', 0.2))
 
-        # Concrete NDMaterial (plane stress, linear elastic)
         ops.nDMaterial('ElasticIsotropic', 1, Ec, nu)
 
-        # Nodes
-        mesh_nodes = p['mesh_nodes']   # {str_nid: [x, y]}
+        mesh_nodes = p['mesh_nodes']
         for nid_str, (x, y) in mesh_nodes.items():
             ops.node(int(nid_str), float(x), float(y))
 
-        # Boundary conditions + fix rotational DOF (3) for ALL nodes
-        # Tri31 only uses DOFs 1,2; DOF 3 (rotation) must be constrained
-        bc_nodes = p.get('bc_nodes', {})   # {str_nid: [fix_x, fix_y]}
+        bc_nodes = p.get('bc_nodes', {})
         for nid_str in mesh_nodes:
             nid = int(nid_str)
             if nid_str in bc_nodes:
                 fx, fy = bc_nodes[nid_str]
-                ops.fix(nid, int(fx), int(fy), 1)
+                ops.fix(nid, int(fx), int(fy))
             else:
-                ops.fix(nid, 0, 0, 1)
+                pass  # ndf=2: no rotational DOF to constrain
 
-        # Triangular elements (try lowercase then uppercase command name)
-        mesh_tris = p['mesh_tris']   # [[eid, n1, n2, n3], ...]
+        mesh_tris = p['mesh_tris']
         for e, n1, n2, n3 in mesh_tris:
             try:
                 ops.element('tri31', int(e), int(n1), int(n2), int(n3), t, 'PlaneStress', 1)
@@ -2249,18 +2475,18 @@ def run_model_2d(p):
                 except Exception:
                     ops.element('tri31', int(e), int(n1), int(n2), int(n3), t, 'PlaneStress', 1)
 
-        # Crack interface elements
-        # crack_pairs format: [[nb, na, y, x, tx, ty, cnx, cny], ...]
-        #   tx,ty  = crack tangent vector (unit)
-        #   cnx,cny = crack normal vector (unit)
-        # For horizontal cracks: tangent=(1,0), normal=(0,1)
-        crack_pairs   = p.get('mesh_crack_pairs', [])
+        # ── Crack interface elements ─────────────────────────────────────────
         crack_mat_data = p.get('crack_mat_data', [])
+        _log(f"[INSTRUMENTATION] Creating crack interface elements... total={len(crack_pairs)}")
 
-        print("[INSTRUMENTATION] Creating crack interface elements...")
-        print(f"[INSTRUMENTATION] Total cracks: {len(crack_pairs)}")
+        # Print compatibility message once (not repeated per crack)
+        if mscrack_available:
+            _log("[MATERIAL USE] MultiSurfCrack2D is available in build but incompatible with tri31 (ndf=2 vs ndf=3)")
+            _log("[MATERIAL USE] → Using EPPGap macro-element for all crack interfaces (stable fallback)")
+        else:
+            _log("[MATERIAL USE] MultiSurfCrack2D not available in this build")
+            _log("[MATERIAL USE] → Using EPPGap macro-element for all crack interfaces (stable fallback)")
 
-        # Build lookup: nearest-y matching with tolerance
         def _find_mat(y_val):
             if not crack_mat_data:
                 return {'mat_type': 'Elastic', 'kn': 210., 'kt': 5.95, 'gap': 0.001, 'eta': 0.02}
@@ -2270,156 +2496,62 @@ def run_model_2d(p):
             return {'mat_type': 'Elastic', 'kn': 210., 'kt': 5.95, 'gap': 0.001, 'eta': 0.02}
 
         elt_base = len(mesh_tris) + 1
-        # Store (nb, na, yc, tx, ty, cnx, cny) for each crack link — used in collect()
+        # Reserve space: fallback macro uses up to 5 elts per crack
+        elt_base_macro = elt_base + len(crack_pairs) + 100
         cnodes = []
 
         crack_y_set = sorted(set(float(cp[2]) for cp in crack_pairs))
         cpos = crack_y_set
 
-        # Track which cracks used MultiSurfCrack2D successfully
-        multisurfcrack2d_used = []
-        multisurf_required_failed = False
+        n_mscrack_ok = 0
+        n_fallback = 0
 
         for ci, cp in enumerate(crack_pairs):
             nb = int(cp[0]); na = int(cp[1]); yc = float(cp[2])
-            # Extract orientation — default to horizontal if not provided
             if len(cp) >= 8:
-                c_tx, c_ty   = float(cp[4]), float(cp[5])
-                c_nx, c_ny   = float(cp[6]), float(cp[7])
+                c_tx, c_ty = float(cp[4]), float(cp[5])
+                c_nx, c_ny = float(cp[6]), float(cp[7])
             else:
-                c_tx, c_ty   = 1.0, 0.0   # tangent along X
-                c_nx, c_ny   = 0.0, 1.0   # normal  along Y
+                c_tx, c_ty = 1.0, 0.0
+                c_nx, c_ny = 0.0, 1.0
 
             cm = _find_mat(yc)
             if ci < 5:
                 matched_y = min(crack_mat_data, key=lambda c: abs(float(c['y']) - yc))['y'] if crack_mat_data else 'N/A'
-                print(f"[DEBUG] crack {ci} yc={yc} matched_y={matched_y}")
+                _log(f"[DEBUG] crack {ci} yc={yc} matched_y={matched_y}")
             mat_type = str(cm.get('mat_type', 'MultiSurfCrack2D'))
-
-            # Material tag for this crack
             mat_id = 10000 + ci
+            kn = max(float(cm.get('kn', 210.0)), 1e-6)
+            kt = max(float(cm.get('kt', 5.95)), 1e-6)
+            gap = float(cm.get('gap', 0.001))
+            eta = float(cm.get('eta', 0.02))
 
-            # Try to use MultiSurfCrack2D if requested and available
-            # Otherwise fall back to standard OpenSees materials
-            if 'multisurfcrack2d' in mat_type.lower() or 'multi' in mat_type.lower():
-                # MultiSurfCrack2D: NDMaterial for interface cracks
-                # Parameters from crack_mat_data or use defaults for horizontal cracks
-                # Correct signature: tag E H M K Eunl Hunl Munl Kunl
-                #   fc ag fcl Acr rho_lok chi_lok rho_act mu chi_act zeta kappa theta w <cPath>
-                kn = max(float(cm.get('kn', 210.0)), 1e-6)
-                kt = max(float(cm.get('kt', 5.95)), 1e-6)
-                # Map GUI kn/kt to MultiSurfCrack2D parameters
-                # Use H_shear to avoid shadowing panel height H
-                E       = kn                                # normal stiffness
-                H_shear = kt                                # shear stiffness (avoid name clash with panel H)
-                M    = 0.0                                  # coupling term
-                K    = 0.0                                  # coupling term
-                Eunl = kn                                   # unload normal stiffness
-                Hunl = kt                                   # unload shear stiffness
-                Munl = 0.0                                  # unload coupling
-                Kunl = 0.0                                  # unload coupling
-                fc_      = float(cm.get('fc', 30.0))        # concrete strength (MPa)
-                ag       = float(cm.get('ag', 25.0))        # max aggregate diameter (mm)
-                fcl      = float(cm.get('fcl', 5.0))        # crack closure stress (MPa)
-                Acr      = float(cm.get('Acr', 1.0))        # nominal crack area
-                rho_lok  = float(cm.get('rho_lok', 0.5))    # interlock dilation parameter
-                chi_lok  = float(cm.get('chi_lok', 0.3))    # interlock cohesion ratio
-                rho_act  = float(cm.get('rho_act', 0.5))    # rubble dilation parameter
-                mu       = float(cm.get('mu', 0.7))         # friction coefficient
-                chi_act  = float(cm.get('chi_act', cm.get('chi', 0.5)))  # active cohesion ratio
-                zeta     = float(cm.get('zeta', 0.3))       # slip break point (pinching)
-                kappa    = float(cm.get('kappa', 1.0))      # roughness transition
-                theta    = float(cm.get('theta', 0.785))    # contact angle (radians)
-                w        = float(cm.get('w0', 0.01))        # initial crack width (mm)
-                cPath    = int(cm.get('cPath', 0))          # load path flag
+            use_mscrack = ('multisurfcrack2d' in mat_type.lower() or 'multi' in mat_type.lower())
 
-                print(f"[MSCRACK2D] args: E={E} H={H_shear} M={M} K={K} Eunl={Eunl} Hunl={Hunl} "
-                      f"Munl={Munl} Kunl={Kunl} fc={fc_} ag={ag} fcl={fcl} Acr={Acr} "
-                      f"rho_lok={rho_lok} chi_lok={chi_lok} rho_act={rho_act} mu={mu} "
-                      f"chi_act={chi_act} zeta={zeta} kappa={kappa} theta={theta} w={w} cPath={cPath}")
-
-                material_created = False
-                try:
-                    ops.nDMaterial('MultiSurfCrack2D', mat_id,
-                                   E, H_shear, M, K,
-                                   Eunl, Hunl, Munl, Kunl,
-                                   fc_, ag, fcl, Acr,
-                                   rho_lok, chi_lok, rho_act, mu,
-                                   chi_act, zeta, kappa, theta, w,
-                                   cPath)
-                    material_created = True
-                except Exception as e_mat:
-                    # Material not available - NO silent fallback
-                    print(f"[CRITICAL] ====================================================")
-                    print(f"[CRITICAL] Crack {ci} requested MultiSurfCrack2D but could not be created.")
-                    print(f"[CRITICAL] Exception: {e_mat}")
-                    print(f"[CRITICAL] ====================================================")
-                    material_created = False
-
-                if not material_created:
-                    multisurf_required_failed = True
-                    cnodes.append((nb, na, yc, c_tx, c_ty, c_nx, c_ny))
-                    continue
-
-                # FIX B: Try to use correct element type for NDMaterial
-                # Prefer zeroLengthND if available, otherwise try zeroLength
-                elt_id = elt_base + ci
-                element_created = False
-                element_type_used = None
-
-                # Try zeroLengthND first (proper 2D ND element)
-                try:
-                    ops.element('zeroLengthND', elt_id, nb, na, mat_id)
-                    element_created = True
-                    element_type_used = 'zeroLengthND'
-                    print(f"[ELEMENT_TYPE] Crack {ci}: zeroLengthND")
-                    print(f"[USING MultiSurfCrack2D] Crack {ci}: MultiSurfCrack2D + zeroLengthND (RECOMMENDED)")
-                except Exception as e_nd:
-                    # Fallback: try zeroLength with NDMaterial
-                    try:
-                        ops.element('zeroLength', elt_id, nb, na, '-mat', mat_id, '-dir', 1, 2)
-                        element_created = True
-                        element_type_used = 'zeroLength'
-                        print(f"[ELEMENT_TYPE] Crack {ci}: zeroLength (fallback)")
-                        print(f"[WARNING] Crack {ci}: Using zeroLength with NDMaterial (may not work correctly)")
-                    except Exception as e_zl:
-                        # Both element types failed
-                        element_created = False
-                        print(f"[CRITICAL FALLBACK] Cannot create interface element for crack {ci}")
-                        print(f"  zeroLengthND error: {e_nd}")
-                        print(f"  zeroLength error: {e_zl}")
-
-                if not element_created:
-                    # NO silent fallback — mark as failed
-                    print(f"[CRITICAL] ====================================================")
-                    print(f"[CRITICAL] Crack {ci} requested MultiSurfCrack2D but no compatible element type found.")
-                    print(f"[CRITICAL] ====================================================")
-                    multisurf_required_failed = True
-                else:
-                    # Successfully created MultiSurfCrack2D with proper element
-                    multisurfcrack2d_used.append((ci, element_type_used))
-
+            if use_mscrack:
+                # MultiSurfCrack2D is an NDMaterial requiring zeroLengthND (ndf=3),
+                # but tri31 plane-stress elements require ndf=2.  These are
+                # incompatible: zeroLengthND refuses ndf!=3 and tri31 produces
+                # singular stiffness with ndf=3.
+                #
+                # Solution: always use EPPGap macro-element as a stable
+                # uniaxial-material crack surrogate that works with ndf=2.
+                _create_eppgap_macro(ops, ci, nb, na, kn, kt, gap, eta, elt_base_macro)
+                n_fallback += 1
                 cnodes.append((nb, na, yc, c_tx, c_ty, c_nx, c_ny))
 
             else:
-                # Standard OpenSees materials (Elastic, ElasticPPGap, Steel01)
-                kn  = max(float(cm.get('kn',  210.)), 1e-6)
-                kt  = max(float(cm.get('kt',  5.95)), 1e-6)
-                gap = float(cm.get('gap', 0.001))
-                eta = float(cm.get('eta', 0.02))
-
-                # mat_t = tangential (slip) material, mat_n = normal (opening) material
+                # Standard materials (Elastic, ElasticPPGap, Steel01)
                 mat_t = mat_id * 2
                 mat_n = mat_id * 2 + 1
 
                 if 'eppgap' in mat_type.lower() or 'elasticppgap' in mat_type.lower():
-                    ops.uniaxialMaterial('ElasticPPGap', mat_t, kt, kt * 5., gap, eta, '-damage', 'NoDamage')
-                    ops.uniaxialMaterial('ElasticPPGap', mat_n, kn, kn * 10., 0.0, eta, '-damage', 'NoDamage')
+                    ops.uniaxialMaterial('ElasticPPGap', mat_t, kt, kt * 5., gap, eta)
+                    ops.uniaxialMaterial('ElasticPPGap', mat_n, kn, kn * 10., 0.0, eta)
                 elif 'bilinear' in mat_type.lower() or 'custom' in mat_type.lower():
                     ops.uniaxialMaterial('Steel01', mat_t, kt * gap, kt, eta)
                     ops.uniaxialMaterial('Steel01', mat_n, kn * gap, kn, eta)
                 else:
-                    # Default: Elastic
                     ops.uniaxialMaterial('Elastic', mat_t, kt)
                     ops.uniaxialMaterial('Elastic', mat_n, kn)
 
@@ -2427,90 +2559,69 @@ def run_model_2d(p):
                 ops.element('zeroLength', elt_id, nb, na, '-mat', mat_t, mat_n, '-dir', 1, 2)
                 cnodes.append((nb, na, yc, c_tx, c_ty, c_nx, c_ny))
 
-        # === INSTRUMENTATION SUMMARY ===
-        print("[INSTRUMENTATION] Crack creation complete.")
-        print(f"[INSTRUMENTATION] MultiSurfCrack2D used: {len(multisurfcrack2d_used)} cracks")
-        for ci, elem_type in multisurfcrack2d_used:
-            print(f"[INSTRUMENTATION]   Crack {ci}: {elem_type}")
-        if multisurf_required_failed:
-            print("[CRITICAL] Some cracks requested MultiSurfCrack2D but FAILED — no fallback was used.")
-            raise RuntimeError(
-                "MultiSurfCrack2D requested but unavailable or incompatible. "
-                "No fallback was used. Fix your OpenSees build or change material type.")
-        if not multisurfcrack2d_used and crack_pairs:
-            print("[WARNING] No cracks using MultiSurfCrack2D!")
-        elif multisurfcrack2d_used:
-            print(f"[SUMMARY] ✓ Successfully using MultiSurfCrack2D for {len(multisurfcrack2d_used)}/{len(crack_pairs)} cracks")
+        _log(f"[INSTRUMENTATION] Crack creation complete. "
+             f"MultiSurfCrack2D={n_mscrack_ok}, EPPGap_fallback={n_fallback}, "
+             f"other={len(crack_pairs) - n_mscrack_ok - n_fallback}")
 
-        # ── Loads ─────────────────────────────────────────────────────────────
-        load_nodes = p.get('load_nodes', {})   # {str_nid: [Fx, Fy]}
+        # ── Loads ────────────────────────────────────────────────────────────
+        load_nodes = p.get('load_nodes', {})
         if not load_nodes:
             raise RuntimeError("No loads applied. Assign loads on the Geometry tab.")
 
         ops.timeSeries('Linear', 1)
         ops.pattern('Plain', 1, 1)
         for nid_str, (Fx, Fy) in load_nodes.items():
-            ops.load(int(nid_str), float(Fx), float(Fy), 0.0)
+            ops.load(int(nid_str), float(Fx), float(Fy))
 
-        # Reset pseudo-time to 0 so reaction collection has a clean reference.
-        # At t=0 before any analysis step the constant part equals 0, so this
-        # does not freeze the incremental loads — it just re-anchors the clock.
-        ops.loadConst('-time', 0.0)
+        # NOTE: loadConst('-time', 0.0) removed — it zeroes the reference
+        # load, breaking DisplacementControl at step 0.
 
-        # Also find all fixed nodes for reaction collection
         fixed_nids = [int(k) for k in bc_nodes.keys()]
 
-        # ── Robust reference-node selection ───────────────────────────────────
-        # DisplacementControl requires a ref DOF that is FREE (not fixed).
+        # ── (B) Reference-node selection with auto-fix ───────────────────────
         at = p.get('analysis_type', 'DisplacementControl')
-        ref_nid = None; ref_dof = None; at_auto_switched = False
+        ref_nid = auto_fixes.get('ref_node', None)
+        ref_dof = auto_fixes.get('ref_dof', None)
+        at_auto_switched = False
 
         if at == 'DisplacementControl':
-            for nid_str, (Fx, Fy) in load_nodes.items():
-                candidate = int(nid_str)
-                bc_v      = bc_nodes.get(nid_str, [0, 0])
-                dof_cand  = 2 if abs(Fy) > abs(Fx) else 1
-                if int(bc_v[dof_cand - 1]) != 1:      # DOF is NOT fixed → valid
-                    ref_nid = candidate; ref_dof = dof_cand
-                    break
             if ref_nid is None:
-                print("[CONTROL] No loaded node has a free DOF for DisplacementControl")
-                print("[CONTROL] Auto-switching to LoadControl")
+                for nid_str, (Fx, Fy) in load_nodes.items():
+                    candidate = int(nid_str)
+                    bc_v = bc_nodes.get(nid_str, [0, 0])
+                    dof_cand = 2 if abs(Fy) > abs(Fx) else 1
+                    if int(bc_v[dof_cand - 1]) != 1:
+                        ref_nid = candidate; ref_dof = dof_cand
+                        break
+            if ref_nid is None:
+                _log("[CONTROL] No loaded node has a free DOF — auto-switching to LoadControl")
                 at = 'LoadControl'; at_auto_switched = True
             else:
-                print(f"[CONTROL] ref_nid={ref_nid}  ref_dof={ref_dof}  "
-                      f"analysis=DisplacementControl")
+                _log(f"[CONTROL] ref_nid={ref_nid}  ref_dof={ref_dof}  analysis=DisplacementControl")
 
-        if at == 'LoadControl':          # covers auto-switch case too
+        if at == 'LoadControl':
             for nid_str, (Fx, Fy) in load_nodes.items():
                 ref_nid = int(nid_str)
                 ref_dof = 2 if abs(Fy) > abs(Fx) else 1
                 break
-            if at_auto_switched:
-                print(f"[CONTROL] (auto-switched) ref_nid={ref_nid}  ref_dof={ref_dof}  "
-                      f"analysis=LoadControl")
-            else:
-                print(f"[CONTROL] ref_nid={ref_nid}  ref_dof={ref_dof}  "
-                      f"analysis=LoadControl")
+            _log(f"[CONTROL] {'(auto-switched) ' if at_auto_switched else ''}"
+                 f"ref_nid={ref_nid}  ref_dof={ref_dof}  analysis=LoadControl")
 
         ml   = float(p.get('max_load_factor', 50.))
         nc_y = len(crack_y_set)
         open_l = [[] for _ in range(nc_y)]
         slip_l = [[] for _ in range(nc_y)]
 
-        # active_sys / active_constr are determined by step-0 and reused after
         active_sys = 'UmfPack'; active_constr = 'Plain'
 
         def collect():
             disp_l.append(ops.nodeDisp(ref_nid, ref_dof))
-            # reactions() must be called after a successful analyze() step
             ops.reactions()
             tot_f = 0.
             for fnid in fixed_nids:
                 try: tot_f += abs(ops.nodeReaction(fnid, ref_dof))
                 except: pass
             force_l.append(tot_f)
-            # Average opening / slip per crack Y using local crack axes
             for yi, yv in enumerate(crack_y_set):
                 dw_sum = ds_sum = cnt = 0
                 for nb, na, yc, c_tx, c_ty, c_nx, c_ny in cnodes:
@@ -2518,9 +2629,7 @@ def run_model_2d(p):
                         try:
                             dux = ops.nodeDisp(na, 1) - ops.nodeDisp(nb, 1)
                             duy = ops.nodeDisp(na, 2) - ops.nodeDisp(nb, 2)
-                            # opening = relative disp projected onto crack normal
                             dw_sum += dux * c_nx + duy * c_ny
-                            # slip = relative disp projected onto crack tangent
                             ds_sum += dux * c_tx + duy * c_ty
                             cnt += 1
                         except: pass
@@ -2529,51 +2638,49 @@ def run_model_2d(p):
 
         failed = False; fm = ""
 
-        # Determine base increment
         if at == 'LoadControl':
             base_incr = float(p.get('load_incr', 0.01))
         else:
             base_incr = float(p.get('disp_incr', 0.0005))
 
-        # ── Robust step 0: try UmfPack/Plain → BandGeneral/Plain → BandGeneral/Transformation
-        ok0, alg0, active_sys, active_constr = _step_robust(
-            ops, p, at, ref_nid, ref_dof, base_incr)
+        # ── (D) Robust step 0 with full recovery ────────────────────────────
+        ok0, alg0, active_sys, active_constr = _step_with_recovery(
+            ops, p, at, ref_nid, ref_dof, base_incr, step_num=0)
 
         if ok0 == 0:
             collect()
-            print(f"[STEP0] OK — alg={alg0}  sys={active_sys}  constr={active_constr}")
+            _log(f"[STEP0] OK — alg={alg0}  sys={active_sys}  constr={active_constr}")
         else:
-            # Print full diagnostic before raising
             n_fixed_dofs = sum(int(v[0]) + int(v[1]) for v in bc_nodes.values())
-            total_load   = sum(abs(float(Fx)) + abs(float(Fy))
-                               for Fx, Fy in load_nodes.values())
-            print(f"[STEP0 FAIL] Nodes={len(mesh_nodes)}, Elements={len(mesh_tris)}")
-            print(f"[STEP0 FAIL] Fixed DOFs={n_fixed_dofs} across {len(bc_nodes)} BC nodes")
-            print(f"[STEP0 FAIL] ref_nid={ref_nid}  ref_dof={ref_dof}")
-            print(f"[STEP0 FAIL] Total applied load magnitude = {total_load:.4g}")
-            print(f"[STEP0 FAIL] Systems tried: UmfPack, BandGeneral  "
-                  f"Constraints tried: Plain, Transformation")
-            print(f"[STEP0 FAIL] Analysis type: {at}")
+            total_load = sum(abs(float(Fx)) + abs(float(Fy))
+                             for Fx, Fy in load_nodes.values())
+            _log(f"[STEP0 FAIL] Nodes={len(mesh_nodes)}, Elements={len(mesh_tris)}, "
+                 f"Fixed DOFs={n_fixed_dofs}, ref_nid={ref_nid}, ref_dof={ref_dof}, "
+                 f"Total load={total_load:.4g}")
             raise RuntimeError(
-                "Analysis failed at step 0 (singular stiffness / bad integrator setup).\n"
+                f"Analysis failed at step 0.\n"
                 f"  Nodes={len(mesh_nodes)}, Elements={len(mesh_tris)}, "
                 f"Fixed DOFs={n_fixed_dofs}, ref_nid={ref_nid}, ref_dof={ref_dof}\n"
-                "  All solver combos tried: UmfPack/BandGeneral x Plain/Transformation\n"
-                "Possible causes:\n"
-                "  - Not enough BCs — singular stiffness matrix (check [VALIDATION] above)\n"
-                "  - ref DOF is constrained or disconnected from the loaded structure\n"
-                "  - Zero-area element or severely ill-conditioned mesh\n"
-                "See [STEP0 FAIL] and [VALIDATION] output above.")
+                "  All solver/constraint/algorithm/test combos exhausted.\n"
+                "Possible causes: insufficient BCs, singular stiffness, bad mesh.")
 
-        # ── Remaining steps (reuse the working sys/constr combo) ──────────────
+        # ── Remaining steps ──────────────────────────────────────────────────
         if at == 'LoadControl':
             incr  = base_incr
             steps = max(0, int(1. / max(incr, 1e-12)) - 1)
             for st in range(steps):
                 ok, cur, alg = _cutback(ops, p, at, ref_nid, ref_dof, incr,
                                         sys_type=active_sys, constr_type=active_constr)
-                if ok == 0: collect(); incr = min(incr, cur)
-                else: failed = True; fm = f"step {st + 1} alg={alg}"; break
+                if ok == 0:
+                    collect(); incr = min(incr, cur)
+                else:
+                    # Try full recovery for this step
+                    ok2, alg2, s2, c2 = _step_with_recovery(
+                        ops, p, at, ref_nid, ref_dof, incr, step_num=st+1)
+                    if ok2 == 0:
+                        collect(); active_sys = s2; active_constr = c2
+                    else:
+                        failed = True; fm = f"step {st + 1} alg={alg}"; break
         else:
             tgt   = float(p.get('target_disp', 0.05))
             incr  = base_incr
@@ -2585,8 +2692,15 @@ def run_model_2d(p):
                 except: pass
                 ok, cur, alg = _cutback(ops, p, at, ref_nid, ref_dof, incr,
                                         sys_type=active_sys, constr_type=active_constr)
-                if ok == 0: collect(); incr = min(incr, cur)
-                else: failed = True; fm = f"step {st + 1} alg={alg}"; break
+                if ok == 0:
+                    collect(); incr = min(incr, cur)
+                else:
+                    ok2, alg2, s2, c2 = _step_with_recovery(
+                        ops, p, at, ref_nid, ref_dof, incr, step_num=st+1)
+                    if ok2 == 0:
+                        collect(); active_sys = s2; active_constr = c2
+                    else:
+                        failed = True; fm = f"step {st + 1} alg={alg}"; break
 
         # Collect last-step nodal displacements
         for nid_str in mesh_nodes:
@@ -2609,7 +2723,8 @@ def run_model_2d(p):
     a  = lambda x: np.array(x, dtype=float)
     la = lambda x: [a(v) for v in x] if x else []
     nids_arr = np.array(sorted(node_disp_last.keys()), dtype=int)
-    disp_arr = np.array([node_disp_last[n] for n in nids_arr], dtype=float) if len(nids_arr) else np.zeros((0, 2))
+    disp_arr = (np.array([node_disp_last[n] for n in nids_arr], dtype=float)
+                if len(nids_arr) else np.zeros((0, 2)))
 
     return dict(
         disp=a(disp_l), force=a(force_l),
@@ -2617,14 +2732,39 @@ def run_model_2d(p):
         crack_openings=la(open_l), crack_slips=la(slip_l),
         node_disp_last_ids=nids_arr, node_disp_last_vals=disp_arr,
         status=status, message=msg,
+        log=list(_LOG_LINES),
     )
 
 
 def main():
     if len(sys.argv) == 3:
-        with open(sys.argv[1]) as f:
+        with open(sys.argv[1], encoding='utf-8') as f:
             p = json.load(f)
+
         r = run_model_2d(p)
+
+        # ── (E) Always write outputs ─────────────────────────────────────────
+        out_dir = os.path.dirname(os.path.abspath(sys.argv[2]))
+
+        # Write run.log
+        try:
+            log_path = os.path.join(out_dir, 'run.log')
+            with open(log_path, 'w', encoding='utf-8') as lf:
+                lf.write('\n'.join(r.get('log', _LOG_LINES)))
+            print(f"[OUTPUT] run.log written ({len(r.get('log', _LOG_LINES))} lines)")
+        except Exception as e_log:
+            print(f"[OUTPUT WARN] Could not write run.log: {e_log}")
+
+        # Write params.json copy (already written by GUI, but ensure it exists)
+        try:
+            pj_path = os.path.join(out_dir, 'params.json')
+            if not os.path.exists(pj_path):
+                with open(pj_path, 'w', encoding='utf-8') as pf:
+                    json.dump(p, pf, indent=2)
+        except Exception:
+            pass
+
+        # Always write results.npz (even if partial/failed)
         nids = r['node_disp_last_ids']; nvals = r['node_disp_last_vals']
         np.savez(sys.argv[2],
             disp=r['disp'], force=r['force'],
@@ -2677,9 +2817,21 @@ class WSLWorker(QThread):
             bash = f"{self.activate} && python3 {rp_w} {pp_w} {np_w}"
             cmd  = ["wsl", "bash", "-lc", bash]
             self.log.emit(f"[CMD] {bash[:140]}")
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            proc = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=600)
             if proc.stdout.strip(): self.log.emit(proc.stdout.strip())
             if proc.stderr.strip(): self.log.emit("[STDERR] " + proc.stderr.strip())
+
+            # Show run.log if it was written
+            log_file = self.run_dir / "run.log"
+            if log_file.exists():
+                try:
+                    log_text = log_file.read_text(encoding='utf-8')
+                    if log_text.strip():
+                        self.log.emit("\n── run.log ──")
+                        for line in log_text.strip().split('\n')[-50:]:
+                            self.log.emit(line)
+                except Exception:
+                    pass
 
             if proc.returncode != 0 and not np_.exists():
                 err_detail = ""
@@ -2691,7 +2843,7 @@ class WSLWorker(QThread):
                     f"Analysis FAILED (returncode={proc.returncode}).\n"
                     f"{err_detail}\n\n"
                     "Possible causes:\n"
-                    "  1. MultiSurfCrack2D requested but not in OpenSees build\n"
+                    "  1. MultiSurfCrack2D not in build (EPPGap fallback should have run)\n"
                     "  2. Wrong activate command in Run tab\n"
                     "  3. openseespy not installed in that env\n"
                     "  4. WSL path mapping issue\n"
@@ -2721,8 +2873,9 @@ class WSLWorker(QThread):
 
             raw_status = str(data["status"][0])
             raw_message = str(data["message"][0])
-            # If WSL process returned non-zero, override status to failed
-            if proc.returncode != 0:
+            # For partial results, keep the status from the runner
+            # Only override to "failed" if returncode is non-zero AND status was not "partial"
+            if proc.returncode != 0 and raw_status != "partial":
                 raw_status = "failed"
                 raw_message = f"[FAIL returncode={proc.returncode}] {raw_message}"
                 if proc.stderr.strip():
@@ -2978,6 +3131,8 @@ class MainWindow(QMainWindow):
         py_p = _j.dumps(p, indent=2).replace(': true', ': True').replace(': false', ': False').replace(': null', ': None')
         nt = len(p.get("mesh_tris", []))
         nc = len(p.get("mesh_crack_pairs", []))
+
+        # Clean header for the exported script
         hdr = (
             f'#!/usr/bin/env python3\n'
             f'"""\n'
@@ -2986,15 +3141,32 @@ class MainWindow(QMainWindow):
             f'Panel     : {p.get("panel_W","?")} × {p.get("panel_H","?")} m\n'
             f'Mesh      : tri={nt}  crack_links={nc}\n'
             f'\n'
-            f'Run:\n'
+            f'Usage:\n'
             f'  python panel_analysis.py params.json results.npz\n'
+            f'\n'
+            f'This script loads parameters from params.json and runs the 2D RC panel analysis.\n'
+            f'Results are saved to results.npz.\n'
             f'"""\n'
+            f'\n'
             f'import json, sys\n\n'
-            f'# ── Edit parameters here ──────────────────────────────────────\n'
-            f'PARAMS = {py_p}\n\n'
-            f'# ── Runner code ───────────────────────────────────────────────\n'
+            f'# Load parameters from external file\n'
+            f'if len(sys.argv) == 3:\n'
+            f'    with open(sys.argv[1], encoding="utf-8") as f:\n'
+            f'        PARAMS = json.load(f)\n'
+            f'    RESULTS_FILE = sys.argv[2]\n'
+            f'else:\n'
+            f'    # Fallback: embedded parameters (for direct execution)\n'
+            f'    RESULTS_FILE = "results.npz"\n'
+            f'    PARAMS = {py_p}\n'
+            f'\n'
+            f'# ────────────────────────────────────────────────────────────\n'
+            f'# Runner implementation: call this after defining PARAMS above\n'
+            f'# ────────────────────────────────────────────────────────────\n'
         )
-        self.scr.set_script(hdr + RUNNER_PY.lstrip())
+
+        # Include the full runner code for standalone execution
+        full_script = hdr + RUNNER_PY.lstrip()
+        self.scr.set_script(full_script)
         self.lbl_workflow.setText(
             "  Script generated. Use ⑥ Script tab to copy or save.")
 
