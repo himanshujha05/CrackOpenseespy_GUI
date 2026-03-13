@@ -7,9 +7,10 @@
 The app lets you:
 - Build a 2D plane-stress RC panel mesh using OpenSees 3-node triangular elements (`tri31`)
 - Insert horizontal crack interfaces by duplicating mesh rows
-- Assign crack constitutive behavior per crack line
+- Trace cracks from a background image or hand-draw them on the mesh canvas
+- Assign crack constitutive behavior with a global template and per-interface element overrides
 - Apply boundary conditions and loads interactively
-- Run nonlinear static analysis and visualize response curves and fields
+- Run nonlinear static analysis and visualize response curves, crack response histories, and fields
 
 In simple terms, `tri31` is the standard 2D triangle element used to model the concrete panel body. Crack behavior is then added at the interfaces between duplicated node rows.
 
@@ -68,7 +69,7 @@ Install on the machine:
 - WSL2 with Ubuntu
 - OpenSeesPy inside WSL (or your WSL venv/conda env)
 
-Then in the GUI Run tab set `Activate cmd`, for example:
+Then in the GUI Run tab either click `Auto-Detect` or set `Activate / Python cmd`, for example:
 
 - `source ~/ops_env/bin/activate`
 - `source .venv/bin/activate`
@@ -87,7 +88,7 @@ pip install -r requirements.txt
 python gui_wsl.py
 ```
 
-Run tab `Activate cmd` example:
+Run tab `Activate / Python cmd` example:
 
 - `source .venv/bin/activate`
 
@@ -100,7 +101,7 @@ pip install -r requirements.txt
 python gui_wsl.py
 ```
 
-Run tab `Activate cmd` example:
+Run tab `Activate / Python cmd` example:
 
 - `source .venv/bin/activate`
 
@@ -114,6 +115,7 @@ Most users can run immediately after clone + `pip install -r requirements.txt`.
 They can test different crack material options directly in the GUI:
 
 - `MultiSurfCrack2D`
+- `EPPGap Macro (4-spring)`
 - `Elastic`
 - `ElasticPPGap`
 - `CustomBilinear`
@@ -150,23 +152,31 @@ bash /mnt/c/Users/himan/multi-surf-crack2D/build_msc2d.sh
 ## Typical Workflow in GUI
 
 1. Geometry tab:
-- Set panel size, mesh density, crack lines
-- Assign BCs and loads
+- Set panel size and mesh density
+- Add crack rows manually, click to place them, or trace over an uploaded panel image
+- Assign BCs and loads on the mesh canvas
 2. Crack Materials tab:
 - Refresh from geometry
-- Choose material type per crack (`MultiSurfCrack2D`, `Elastic`, `ElasticPPGap`, `CustomBilinear`)
+- Use the Template group to define default crack properties
+- Select table rows to edit individual crack interface elements in the Selected Element Editor
+- Choose material type per interface element (`MultiSurfCrack2D`, `EPPGap Macro (4-spring)`, `Elastic`, `ElasticPPGap`, `CustomBilinear`)
 3. Analysis tab:
 - Choose `DisplacementControl` or `LoadControl`
+- Select solver, constraint handler, and numberer when convergence tuning is needed
 4. Run tab:
+- Use `Auto-Detect` to locate a working OpenSeesPy backend, or enter the command manually
 - Validate backend
 - Run analysis
 5. Results tab:
 - Plot force-displacement, crack opening/slip, deformed mesh, contour
+- Click crack markers to inspect per-element response histories
 
 ## Notes
 
-- The GUI now supports Windows (WSL) and Linux/macOS (local bash backend).
+- The GUI supports Windows with WSL or local Windows Python, plus Linux/macOS local backends.
 - For cracks set to `MultiSurfCrack2D`, the runner now tries true `zeroLengthND` integration first and only falls back to the robust spring macro model when compatibility fails in that environment.
+- Crack interface materials are managed per interface element in a scrollable editor with a template section, selected-element editor, and crack table.
+- The GUI stores backend detection settings in a local `panel_gui_config.json` file; that file is machine-specific and is not tracked by git.
 - Runs are saved under `~/panel_analysis_runs/`.
 - For collaborator handoff checklist, see `SETUP_FOR_COLLABORATORS.md`.
 
