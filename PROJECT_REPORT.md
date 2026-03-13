@@ -130,7 +130,7 @@ Uses Divakar equations (Eq. 31/32) to compute stiffness values from concrete com
 
 **Buttons:**
 - **Run Analysis:** Validates the setup, creates a run folder, spawns a WSL worker thread, and streams console output in real time
-- **Validate OpenSees Build:** Tests whether MultiSurfCrack2D material and zeroLengthND element are available
+- **Validate OpenSees Build:** Tests whether MultiSurfCrack2D material and 2D `zeroLengthND` link path are available
 - **Run Integration Self-Test:** 3-part test (material → element → analysis) to confirm the custom material works correctly
 - **Clear Console**
 
@@ -185,7 +185,7 @@ The core scientific contribution. This plasticity-based model features:
 - Handles general crack types: flexural, shear, mixed-mode, and crushing
 
 ### 4.4 Fallback Macro-Element
-When MultiSurfCrack2D is not compiled into OpenSees, the tool provides an **EPPGap macro-element** fallback:
+For cracks assigned as `MultiSurfCrack2D`, the runner first attempts true ND-material interface usage (`zeroLengthND`) in the same 2D model context. If that path is unavailable or incompatible in the runtime environment, the tool provides an **EPPGap macro-element** fallback:
 - 4 tangential (shear) springs with staggered gaps — approximates progressive engagement
 - 1 normal spring — captures opening/closing behavior
 - Uses `ElasticPPGap` uniaxial material for each spring
@@ -247,16 +247,18 @@ params.json  →  runner.py (in WSL)  →  results.npz
 **Key implementation details in the runner:**
 
 1. **Material Detection & Fallback:**
-   - The runner first tries to create a test MultiSurfCrack2D nDMaterial
-   - If the custom material is not compiled into OpenSees, it falls back to an **EPPGap macro-element**: 4 parallel shear springs with staggered gaps + 1 normal spring
-   - This fallback still captures nonlinear crack behavior (gap opening, plastic slip) even without the full MultiSurfCrack2D model
+   - The runner first checks whether `MultiSurfCrack2D` exists and whether a 2D `zeroLengthND` crack link can be created
+   - If both checks pass, cracks assigned as `MultiSurfCrack2D` use true ND-material links
+   - If either check fails, those cracks fall back to an **EPPGap macro-element**: 4 parallel shear springs with staggered gaps + 1 normal spring
+   - This fallback still captures nonlinear crack behavior (gap opening, plastic slip) when full ND integration is not available
 
 2. **Crack Material Assignment:**
    - Each crack link reads its material type and parameters (kn, kt, gap, eta) from the `crack_mat_data` array
-   - For `MultiSurfCrack2D` or `ElasticPPGap`: creates `ElasticPPGap` uniaxial materials
+   - For `MultiSurfCrack2D`: attempts `nDMaterial + zeroLengthND`; if it fails, uses EPPGap macro fallback
+   - For `ElasticPPGap`: creates `ElasticPPGap` uniaxial materials
    - For `Elastic`: creates simple `Elastic` uniaxial springs
    - For `CustomBilinear`: creates `Steel01` bilinear materials
-   - Springs are assigned to zero-length elements in directions 1 (tangential) and 2 (normal)
+   - Standard spring materials are assigned to zero-length elements in directions 1 (tangential) and 2 (normal)
 
 3. **Robust Convergence Strategy:**
    - **Algorithm fallback:** Tries NewtonLineSearch → ModifiedNewton → KrylovNewton → Newton

@@ -31,7 +31,8 @@ If you must use custom `MultiSurfCrack2D` inside OpenSees, build on the target m
 bash build_msc2d.sh
 ```
 
-If custom material is not available, the runner uses a stable fallback interface model.
+For cracks set to `MultiSurfCrack2D`, the runner first attempts true `zeroLengthND` usage.
+If that link path is not compatible in the target environment, it uses a stable fallback interface model.
 
 ## Notes for sharing with professor
 - Share source code, not compiled `.so/.pyd` binaries.

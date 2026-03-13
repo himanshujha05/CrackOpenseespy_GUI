@@ -116,7 +116,7 @@ They can test different crack material options directly in the GUI:
 - `ElasticPPGap`
 - `CustomBilinear`
 
-If custom `MultiSurfCrack2D` is unavailable, the runner automatically uses a stable fallback model so analysis can still run.
+If `MultiSurfCrack2D` cannot be used for the current 2D link path in that environment, the runner automatically uses a stable fallback model so analysis can still run.
 
 ### Case B: Custom material required (`MultiSurfCrack2D`)
 If a collaborator must run with your custom material integrated into OpenSees, they must build OpenSees/OpenSeesPy on their own machine (or use a prebuilt artifact for their exact OS + Python version).
@@ -164,7 +164,7 @@ bash /mnt/c/Users/himan/multi-surf-crack2D/build_msc2d.sh
 ## Notes
 
 - The GUI now supports Windows (WSL) and Linux/macOS (local bash backend).
-- `MultiSurfCrack2D` selection can fall back to robust spring macro behavior when direct ND integration is not compatible with the current element/DOF setup.
+- For cracks set to `MultiSurfCrack2D`, the runner now tries true `zeroLengthND` integration first and only falls back to the robust spring macro model when compatibility fails in that environment.
 - Runs are saved under `~/panel_analysis_runs/`.
 - For collaborator handoff checklist, see `SETUP_FOR_COLLABORATORS.md`.
 

@@ -1889,11 +1889,12 @@ class ScriptTab(QWidget):
 # =============================================================================
 def run_comprehensive_self_test():
     """
-    COMPREHENSIVE SELF-TEST: Proves MultiSurfCrack2D is actually being used.
-    Three-part validation:
-      1. Material creation test
-      2. Element creation test (MUST be zeroLengthND or confirmed compatible zeroLength)
-      3. Analysis test (must return status 0)
+        COMPREHENSIVE SELF-TEST: Proves MultiSurfCrack2D can be used in the
+        current 2D (ndf=2) panel workflow.
+        Three-part validation:
+            1. Material creation test
+            2. 2D zeroLengthND link creation test
+            3. Small static analysis test (status 0)
 
     Returns: (success: bool, details: str)
     Does NOT silently fall back to Elastic — reports exact failure.
@@ -1901,7 +1902,7 @@ def run_comprehensive_self_test():
     try:
         import openseespy.opensees as ops
         ops.wipe()
-        ops.model('basic', '-ndm', 2, '-ndf', 3)  # ndf=3 for zeroLengthND
+        ops.model('basic', '-ndm', 2, '-ndf', 2)
 
         # === TEST 1: Material Creation ===
         # Signature: tag E H M K Eunl Hunl Munl Kunl fc ag fcl Acr
@@ -1921,47 +1922,25 @@ def run_comprehensive_self_test():
             return (False, f"Material creation failed: {e_mat}")
 
         # === TEST 2: Element Creation (STRICT — no silent fallback) ===
-        print("[SELFTEST] TEST 2: Creating interface element...")
+        print("[SELFTEST] TEST 2: Creating 2D zeroLengthND interface element...")
         ops.node(1, 0.0, 0.0)
         ops.node(2, 0.0, 0.1)
-        ops.fix(1, 1, 1, 1)
-        ops.fix(2, 0, 0, 1)
+        ops.fix(1, 1, 1)
+        ops.fix(2, 0, 0)
 
-        element_type_used = None
         try:
-            # Try zeroLengthND first (PREFERRED)
-            try:
-                ops.element('zeroLengthND', 1001, 1, 2, 100)
-                element_type_used = 'zeroLengthND'
-                print("[SELFTEST] TEST 2: [PASS] Element created with zeroLengthND (RECOMMENDED)")
-            except Exception as e_nd:
-                # Try zeroLength (FALLBACK, but only if we explicitly confirm it works)
-                try:
-                    ops.element('zeroLength', 1001, 1, 2, '-mat', 100, '-dir', 1, 2)
-                    element_type_used = 'zeroLength'
-                    print("[SELFTEST] TEST 2: [PASS] Element created with zeroLength (fallback)")
-                except Exception as e_zl:
-                    # Both failed — DO NOT silently switch to Elastic
-                    print(f"[SELFTEST] TEST 2: [FAIL] Both element types failed")
-                    print(f"  zeroLengthND error: {e_nd}")
-                    print(f"  zeroLength error: {e_zl}")
-                    return (False, f"Element creation failed with both zeroLengthND and zeroLength.\n"
-                                   f"  zeroLengthND: {e_nd}\n"
-                                   f"  zeroLength: {e_zl}")
+            ops.element('zeroLengthND', 1001, 1, 2, 100)
+            print("[SELFTEST] TEST 2: [PASS] 2D zeroLengthND element created")
         except Exception as e:
-            print(f"[SELFTEST] TEST 2: [FAIL] Unexpected error: {e}")
-            return (False, f"Unexpected error during element creation: {e}")
-
-        if element_type_used is None:
-            print("[SELFTEST] TEST 2: [FAIL] No element type could be created")
-            return (False, "No valid element type found for MultiSurfCrack2D")
+            print(f"[SELFTEST] TEST 2: [FAIL] zeroLengthND creation failed: {e}")
+            return (False, f"2D zeroLengthND creation failed: {e}")
 
         # === TEST 3: Small Analysis ===
         print("[SELFTEST] TEST 3: Running small displacement control analysis...")
         try:
             ops.timeSeries('Linear', 1)
             ops.pattern('Plain', 1, 1)
-            ops.load(2, 0.0, -1.0, 0.0)
+            ops.load(2, 0.0, -1.0)
 
             ops.wipeAnalysis()
             ops.constraints('Plain')
@@ -1990,7 +1969,7 @@ def run_comprehensive_self_test():
         # === ALL TESTS PASSED ===
         print("[SELFTEST] [PASS] ✓ ALL TESTS PASSED")
         details = (f"✓ Material: MultiSurfCrack2D created successfully\n"
-                   f"✓ Element: {element_type_used} (zeroLengthND preferred)\n"
+                   f"✓ Element: zeroLengthND in 2D ndf=2 model\n"
                    f"✓ Analysis: Small displacement control test passed\n"
                    f"\nMultiSurfCrack2D integration is CONFIRMED WORKING.")
         return (True, details)
@@ -2035,20 +2014,21 @@ def attempt_auto_fix():
 # =============================================================================
 def test_multisurfcrack2d_support():
     """
-    Test if OpenSees build supports MultiSurfCrack2D and proper interface elements.
+        Test if OpenSees build supports MultiSurfCrack2D in the same 2D (ndf=2)
+        interface-link context used by the panel solver.
     Returns: (success: bool, message: str, element_type: str)
-      element_type = 'zeroLengthND' or 'zeroLength' or 'unknown'
+            element_type = 'zeroLengthND' or 'unknown'
     """
     try:
         import openseespy.opensees as ops
         ops.wipe()
-        ops.model('basic', '-ndm', 2, '-ndf', 3)  # ndf=3 for zeroLengthND
+        ops.model('basic', '-ndm', 2, '-ndf', 2)
 
         # Create dummy nodes
         ops.node(1, 0.0, 0.0)
         ops.node(2, 0.0, 0.0)
-        ops.fix(1, 1, 1, 1)
-        ops.fix(2, 0, 0, 1)
+        ops.fix(1, 1, 1)
+        ops.fix(2, 0, 0)
 
         # Test 1: Can we create MultiSurfCrack2D?
         # Signature: tag E H M K Eunl Hunl Munl Kunl fc ag fcl Acr
@@ -2068,41 +2048,19 @@ def test_multisurfcrack2d_support():
                    f"Fix: Recompile OpenSees with multi-surf-crack2d.cpp/.h included.",
                    'unknown')
 
-        # Test 2: Try zeroLengthND (preferred)
+        # Test 2: Try zeroLengthND in 2D (required for true ND material path)
         try:
             ops.element('zeroLengthND', 1001, 1, 2, 100)
             ops.wipe()
             return (True,
-                   "OK: MultiSurfCrack2D + zeroLengthND (preferred element).",
+                   "OK: MultiSurfCrack2D + zeroLengthND works in 2D ndf=2 model.",
                    'zeroLengthND')
         except Exception as e_nd:
-            # Test 3: zeroLength with NDMaterial (may not work)
-            try:
-                ops.wipe()
-                ops.model('basic', '-ndm', 2, '-ndf', 3)
-                ops.node(1, 0.0, 0.0)
-                ops.node(2, 0.0, 0.0)
-                ops.fix(1, 1, 1, 1)
-                ops.fix(2, 0, 0, 1)
-                ops.nDMaterial('MultiSurfCrack2D', 100,
-                              210.0, 5.95, 0.0, 0.0,
-                              210.0, 5.95, 0.0, 0.0,
-                              30.0, 25.0, 5.0, 1.0,
-                              0.5, 0.3, 0.5, 0.7,
-                              0.5, 0.3, 1.0, 0.785, 0.01,
-                              0)
-                ops.element('zeroLength', 1001, 1, 2, '-mat', 100, '-dir', 1, 2)
-                return (True,
-                       "PARTIAL: MultiSurfCrack2D available but using zeroLength (may not support 2D NDMaterial correctly).\n"
-                       "Consider recompiling with zeroLengthND element.",
-                       'zeroLength')
-            except Exception as e_zl:
-                return (False,
-                       f"Neither zeroLengthND nor zeroLength supports MultiSurfCrack2D.\n"
-                       f"zeroLengthND error: {str(e_nd)}\n"
-                       f"zeroLength error: {str(e_zl)}\n"
-                       f"Fix: Recompile OpenSees with zeroLengthND element and MultiSurfCrack2D.",
-                       'unknown')
+            return (False,
+                   f"MultiSurfCrack2D material exists, but 2D zeroLengthND link failed.\n"
+                   f"OpenSees Error: {str(e_nd)}\n"
+                   f"Result: GUI will fall back for MultiSurfCrack2D links in this environment.",
+                   'unknown')
 
     except Exception as e:
         return (False, f"OpenSees test failed: {str(e)}", 'unknown')
@@ -2136,6 +2094,31 @@ def _check_multisurfcrack2d(ops):
                        0.5, 0.3, 0.5, 0.7,
                        0.5, 0.3, 1.0, 0.785, 0.01,
                        0)
+        ops.wipe()
+        return True
+    except Exception:
+        ops.wipe()
+        return False
+
+
+def _check_multisurf_2d_link_compat(ops):
+    """
+    Return True if this build can create a 2D (ndf=2) zeroLengthND link
+    with MultiSurfCrack2D. This is the exact compatibility needed by tri31.
+    """
+    try:
+        ops.wipe()
+        ops.model('basic', '-ndm', 2, '-ndf', 2)
+        ops.node(99980, 0.0, 0.0)
+        ops.node(99981, 0.0, 0.0)
+        ops.nDMaterial('MultiSurfCrack2D', 99980,
+                       210.0, 5.95, 0.0, 0.0,
+                       210.0, 5.95, 0.0, 0.0,
+                       30.0, 25.0, 5.0, 1.0,
+                       0.5, 0.3, 0.5, 0.7,
+                       0.5, 0.3, 1.0, 0.785, 0.01,
+                       0)
+        ops.element('zeroLengthND', 99980, 99980, 99981, 99980)
         ops.wipe()
         return True
     except Exception:
@@ -2435,8 +2418,13 @@ def run_model_2d(p):
     try:
         # ── (A) Check MultiSurfCrack2D availability ──────────────────────────
         mscrack_available = _check_multisurfcrack2d(ops)
+        mscrack_2d_usable = _check_multisurf_2d_link_compat(ops) if mscrack_available else False
         if mscrack_available:
             _log("[MATERIAL CHECK] MultiSurfCrack2D is AVAILABLE in this OpenSees build")
+            if mscrack_2d_usable:
+                _log("[MATERIAL CHECK] MultiSurfCrack2D + zeroLengthND is COMPATIBLE with current 2D ndf=2 model")
+            else:
+                _log("[MATERIAL CHECK] MultiSurfCrack2D exists but 2D zeroLengthND compatibility check FAILED")
         else:
             _log("[MATERIAL CHECK] MultiSurfCrack2D is NOT available — EPPGap fallback will be used")
 
@@ -2508,12 +2496,14 @@ def run_model_2d(p):
         _log(f"[INSTRUMENTATION] Creating crack interface elements... total={len(crack_pairs)}")
 
         # Print compatibility message once (not repeated per crack)
-        if mscrack_available:
-            _log("[MATERIAL USE] MultiSurfCrack2D is available in build but incompatible with tri31 (ndf=2 vs ndf=3)")
-            _log("[MATERIAL USE] → Using EPPGap macro-element for all crack interfaces (stable fallback)")
+        if mscrack_available and mscrack_2d_usable:
+            _log("[MATERIAL USE] MultiSurfCrack2D requested links will use zeroLengthND in this run")
+        elif mscrack_available and not mscrack_2d_usable:
+            _log("[MATERIAL USE] MultiSurfCrack2D is available but not 2D-link compatible in this build")
+            _log("[MATERIAL USE] → Using EPPGap macro-element for requested MultiSurfCrack2D links")
         else:
             _log("[MATERIAL USE] MultiSurfCrack2D not available in this build")
-            _log("[MATERIAL USE] → Using EPPGap macro-element for all crack interfaces (stable fallback)")
+            _log("[MATERIAL USE] → Using EPPGap macro-element for requested MultiSurfCrack2D links")
 
         def _find_mat(y_val):
             if not crack_mat_data:
@@ -2557,13 +2547,24 @@ def run_model_2d(p):
             use_mscrack = ('multisurfcrack2d' in mat_type.lower() or 'multi' in mat_type.lower())
 
             if use_mscrack:
-                # MultiSurfCrack2D is an NDMaterial requiring zeroLengthND (ndf=3),
-                # but tri31 plane-stress elements require ndf=2.  These are
-                # incompatible: zeroLengthND refuses ndf!=3 and tri31 produces
-                # singular stiffness with ndf=3.
-                #
-                # Solution: always use EPPGap macro-element as a stable
-                # uniaxial-material crack surrogate that works with ndf=2.
+                if mscrack_available and mscrack_2d_usable:
+                    try:
+                        # True MultiSurfCrack2D interface link path
+                        ops.nDMaterial('MultiSurfCrack2D', mat_id,
+                                       kn, kt, 0.0, 0.0,
+                                       kn, kt, 0.0, 0.0,
+                                       30.0, 25.0, 5.0, 1.0,
+                                       0.5, 0.3, 0.5, 0.7,
+                                       0.5, 0.3, 1.0, 0.785, 0.01,
+                                       0)
+                        elt_id = elt_base + ci
+                        ops.element('zeroLengthND', elt_id, nb, na, mat_id)
+                        n_mscrack_ok += 1
+                        cnodes.append((nb, na, yc, c_tx, c_ty, c_nx, c_ny))
+                        continue
+                    except Exception as e_ms:
+                        _log(f"[FALLBACK REASON] crack={ci} y={yc:.6f} MultiSurfCrack2D link failed: {e_ms}")
+
                 _create_eppgap_macro(ops, ci, nb, na, kn, kt, gap, eta, elt_base_macro)
                 n_fallback += 1
                 cnodes.append((nb, na, yc, c_tx, c_ty, c_nx, c_ny))
