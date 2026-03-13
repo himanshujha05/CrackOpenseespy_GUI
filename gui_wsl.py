@@ -13,7 +13,7 @@ Run:
   python gui_wsl.py
 """
 
-import sys, json, time, math, traceback, subprocess
+import sys, json, time, math, traceback, subprocess, shlex
 from pathlib import Path
 import numpy as np
 
@@ -844,13 +844,26 @@ class GeometryTab(QWidget):
         self._update_crack_text()
 
     def _sync_crack_ys_from_text(self):
+        H = max(self.sb_H.value(), 1e-6)
+        tol = 0.01 * H
         ys = []
         for s in self.txt_crack_y.text().replace(";", ",").split(","):
             s = s.strip()
-            if s:
-                try: ys.append(float(s))
-                except ValueError: pass
-        self._crack_ys = sorted(set(ys))
+            if not s:
+                continue
+            try:
+                y = float(s)
+            except ValueError:
+                continue
+            # Avoid boundary cracks and merge near-duplicate Y values.
+            if tol < y < (H - tol):
+                ys.append(y)
+        ys = sorted(ys)
+        dedup = []
+        for y in ys:
+            if not dedup or abs(y - dedup[-1]) >= tol:
+                dedup.append(y)
+        self._crack_ys = dedup
         self._refresh_crack_label()
         self.canvas.set_pending_cracks(self._crack_ys, self.sb_W.value(), self.sb_H.value())
 
@@ -903,14 +916,25 @@ class GeometryTab(QWidget):
         # Merge any Y values the user typed but hasn't committed yet
         txt = self.txt_crack_y.text().strip()
         if txt:
+            H = max(self.sb_H.value(), 1e-6)
+            tol = 0.01 * H
             parsed = []
             for s in txt.replace(";", ",").split(","):
                 s = s.strip()
                 if s:
-                    try: parsed.append(float(s))
-                    except ValueError: pass
+                    try:
+                        y = float(s)
+                    except ValueError:
+                        continue
+                    if tol < y < (H - tol):
+                        parsed.append(y)
             if parsed:
-                self._crack_ys = sorted(set(parsed))
+                parsed = sorted(parsed)
+                dedup = []
+                for y in parsed:
+                    if not dedup or abs(y - dedup[-1]) >= tol:
+                        dedup.append(y)
+                self._crack_ys = dedup
                 self._refresh_crack_label()
         # Keep existing _crack_ys if text field is empty (canvas-click values)
         W = self.sb_W.value(); H = self.sb_H.value()
@@ -1238,8 +1262,9 @@ class CrackMaterialTab(QWidget):
         self.btn_auto_knkt.clicked.connect(self._auto_kn_kt)
 
     def _auto_kn_kt(self):
+        # Divakar Eq.31/32 use crack width in mm and f'c in MPa.
         w = max(self.sb_w0_auto.value(), 0.001)
-        fc = self.sb_fc_auto.value()
+        fc = max(self.sb_fc_auto.value(), 1e-6)
         kn = (2. + w) / w
         kt = 0.00595 * (25.4 / w)**1.6148 * (fc / 34.5)**0.193
         self.sb_kn_tmpl.setValue(kn)
@@ -1278,16 +1303,22 @@ class CrackMaterialTab(QWidget):
         existing = {}
         for r in range(self.tbl.rowCount()):
             try:
-                y = float(self.tbl.item(r, 0).text())
-                existing[round(y, 6)] = r
+                y_item = self.tbl.item(r, 0)
+                if y_item is None:
+                    continue
+                y = float(y_item.text())
+                row_data = []
+                for c in range(6):
+                    cell = self.tbl.item(r, c)
+                    row_data.append(cell.text() if cell is not None else "")
+                existing[round(y, 6)] = row_data
             except Exception:
                 pass
         self.tbl.setRowCount(len(crack_ys))
         for i, y in enumerate(crack_ys):
             yr = round(y, 6)
             if yr in existing:
-                old_r = existing[yr]
-                row_data = [self.tbl.item(old_r, c).text() for c in range(6)]
+                row_data = existing[yr]
                 for c, txt in enumerate(row_data):
                     self.tbl.setItem(i, c, QTableWidgetItem(txt))
             else:
@@ -1383,9 +1414,9 @@ class RunTab(QWidget):
     def __init__(self):
         super().__init__()
         outer = QVBoxLayout(self); outer.setContentsMargins(16, 16, 16, 16); outer.setSpacing(10)
-        outer.addWidget(mk_lbl("Run Analysis  (Windows GUI → WSL OpenSeesPy)", "heading"))
+        outer.addWidget(mk_lbl("Run Analysis  (GUI → OpenSeesPy Backend)", "heading"))
 
-        grp_wsl = QGroupBox("WSL Environment")
+        grp_wsl = QGroupBox("Solver Environment")
         wf = QFormLayout(grp_wsl); wf.setSpacing(6)
         self.wsl_activate = QLineEdit("source ~/ops_env/bin/activate")
         self.wsl_activate.setToolTip(
@@ -1942,7 +1973,8 @@ def run_comprehensive_self_test():
             ops.test('NormUnbalance', 1e-8, 20)
             ops.algorithm('NewtonLineSearch')
 
-            ops.analysis('DisplacementControl', 2, 2, 0.001)
+            ops.integrator('DisplacementControl', 2, 2, 0.001)
+            ops.analysis('Static')
             status = ops.analyze(1)
 
             if status == 0:
@@ -2368,10 +2400,6 @@ def _step_with_recovery(ops, p, at, ln, dof, incr, step_num=0):
                         pass
                     _log(f"[ANALYZE FAIL] ok=-1 atStep={step_num} "
                          f"combo={constr}/{sys_t}/{alg}/{test_type}")
-                    # Only try 2 test configs per algorithm to limit combos
-                    if tol_mult >= 10.0:
-                        break
-
     return -1, 'Newton', 'BandGeneral', 'Transformation'
 
 
@@ -2794,11 +2822,12 @@ class WSLWorker(QThread):
     finished = pyqtSignal(dict)
     error    = pyqtSignal(str)
 
-    def __init__(self, params, run_dir, activate):
+    def __init__(self, params, run_dir, activate, is_windows):
         super().__init__()
         self.params   = params
         self.run_dir  = Path(run_dir)
         self.activate = activate
+        self.is_windows = bool(is_windows)
 
     def run(self):
         try:
@@ -2810,12 +2839,18 @@ class WSLWorker(QThread):
             pp.write_text(json.dumps(self.params, indent=2), encoding='utf-8')
             rp.write_text(RUNNER_PY.lstrip(), encoding='utf-8')
 
-            pp_w  = win_to_wsl(str(pp))
-            rp_w  = win_to_wsl(str(rp))
-            np_w  = win_to_wsl(str(np_))
-
-            bash = f"{self.activate} && python3 {rp_w} {pp_w} {np_w}"
-            cmd  = ["wsl", "bash", "-lc", bash]
+            if self.is_windows:
+                pp_w  = win_to_wsl(str(pp))
+                rp_w  = win_to_wsl(str(rp))
+                np_w  = win_to_wsl(str(np_))
+                bash = f"{self.activate} && python3 {rp_w} {pp_w} {np_w}"
+                cmd  = ["wsl", "bash", "-lc", bash]
+            else:
+                pp_q = shlex.quote(str(pp))
+                rp_q = shlex.quote(str(rp))
+                np_q = shlex.quote(str(np_))
+                bash = f"{self.activate} && python3 {rp_q} {pp_q} {np_q}"
+                cmd  = ["bash", "-lc", bash]
             self.log.emit(f"[CMD] {bash[:140]}")
             proc = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=600)
             if proc.stdout.strip(): self.log.emit(proc.stdout.strip())
@@ -2910,6 +2945,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1300, 860)
         self.RUNS_DIR = str(Path.home() / "panel_analysis_runs")
         self._worker  = None
+        self._is_windows = sys.platform.startswith("win")
 
         root = QWidget(); self.setCentralWidget(root)
         vl   = QVBoxLayout(root); vl.setContentsMargins(0, 0, 0, 0); vl.setSpacing(0)
@@ -2922,7 +2958,7 @@ class MainWindow(QMainWindow):
         t1.setStyleSheet(f"color:{C1};font-size:16px;font-weight:bold;letter-spacing:2px;")
         t2  = QLabel("  Plane Stress  ·  tri31  ·  zeroLength Cracks  ·  OpenSeesPy")
         t2.setStyleSheet(f"color:{TXTS};font-size:12px;")
-        self.lbl_wsl = QLabel("WSL: checking…")
+        self.lbl_wsl = QLabel("Backend: checking…")
         self.lbl_wsl.setStyleSheet(f"color:{C4};font-size:12px;font-weight:bold;")
         hl.addWidget(t1); hl.addWidget(t2); hl.addStretch(); hl.addWidget(self.lbl_wsl)
         vl.addWidget(hdr)
@@ -3018,22 +3054,28 @@ class MainWindow(QMainWindow):
 
     def check_wsl(self):
         act = self.run.get_activate()
-        cmd = ["wsl", "bash", "-lc",
-               f"{act} && python3 -c \"import openseespy.opensees; print('OK')\""]
+        if self._is_windows:
+            cmd = ["wsl", "bash", "-lc",
+                   f"{act} && python3 -c \"import openseespy.opensees; print('OK')\""]
+            backend_name = "WSL"
+        else:
+            cmd = ["bash", "-lc",
+                   f"{act} && python3 -c \"import openseespy.opensees; print('OK')\""]
+            backend_name = "Local"
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
             ok   = "OK" in proc.stdout
-            self.lbl_wsl.setText(f"WSL: {'✓ OK' if ok else '✗ NOT READY'}")
+            self.lbl_wsl.setText(f"{backend_name}: {'✓ OK' if ok else '✗ NOT READY'}")
             self.lbl_wsl.setStyleSheet(
                 f"color:{C2 if ok else C3};font-size:12px;font-weight:bold;")
-            self.run.append("✓ WSL OpenSeesPy ready." if ok else
-                            "✗ WSL check failed — fix 'Activate command' in Run tab.")
+            self.run.append(f"✓ {backend_name} OpenSeesPy ready." if ok else
+                            f"✗ {backend_name} check failed — fix 'Activate command' in Run tab.")
             if not ok and proc.stderr.strip():
                 self.run.append(proc.stderr.strip()[:500])
         except Exception as e:
-            self.lbl_wsl.setText("WSL: ✗ ERROR")
+            self.lbl_wsl.setText(f"{backend_name}: ✗ ERROR")
             self.lbl_wsl.setStyleSheet(f"color:{C3};font-size:11px;font-weight:bold;")
-            self.run.append(f"WSL check error: {e}")
+            self.run.append(f"{backend_name} check error: {e}")
 
     def start_analysis(self):
         if self._worker and self._worker.isRunning():
@@ -3071,15 +3113,16 @@ class MainWindow(QMainWindow):
         self.run.append(f"BCs        : {nbc} fixed DOFs    Loads: {nld} loaded nodes")
         self.run.append(f"Analysis   : {p.get('analysis_type')}  "
                         f"target={p.get('target_disp')}  incr={p.get('disp_incr')}")
-        self.run.set_status("Running in WSL…")
+        backend_name = "WSL" if self._is_windows else "local backend"
+        self.run.set_status(f"Running in {backend_name}…")
         self.run.btn_run.setEnabled(False)
         self.btn_run.setEnabled(False)
         self.btn_run.setText("⏳  Running…")
-        self.lbl_workflow.setText("  Analysis running in WSL — see ④ Run tab for progress…")
+        self.lbl_workflow.setText("  Analysis running — see ④ Run tab for progress…")
         self.lbl_workflow.setStyleSheet(f"color:{C4};font-size:10px;")
-        self.statusBar().showMessage("Analysis running in WSL…")
+        self.statusBar().showMessage(f"Analysis running in {backend_name}…")
 
-        self._worker = WSLWorker(p, str(rd), act)
+        self._worker = WSLWorker(p, str(rd), act, self._is_windows)
         self._worker.log.connect(self.run.append)
         self._worker.finished.connect(self._on_done)
         self._worker.error.connect(self._on_err)
@@ -3118,10 +3161,10 @@ class MainWindow(QMainWindow):
         self.run.btn_run.setEnabled(True)
         self.btn_run.setEnabled(True)
         self.btn_run.setText("▶  Run Analysis")
-        self.run.set_status("✗ Error in WSL (see console)", ok=False)
+        self.run.set_status("✗ Error in solver backend (see console)", ok=False)
         self.run.append("\nERROR:\n" + tb)
         self.lbl_workflow.setText(
-            "  Error — see ④ Run tab console. Check activate command & openseespy install.")
+            "  Error — see ④ Run tab console. Check activate command and OpenSeesPy install.")
         self.lbl_workflow.setStyleSheet(f"color:{C3};font-size:10px;font-weight:bold;")
         self.statusBar().showMessage("Error — see console.")
 

@@ -47,9 +47,21 @@ sudo apt-get install -y -qq \
     g++ gfortran \
     liblapack-dev libblas-dev \
     libssl-dev libffi-dev \
+    tcl-dev tk-dev \
     python3.12-dev python3.12-venv \
     git wget curl patchelf pkg-config
 ok "Build dependencies ready."
+
+# Some OpenSees sources include <tcl.h>/<tk.h> directly while Ubuntu installs
+# headers under versioned dirs (e.g., /usr/include/tcl8.6). Create symlinks once.
+if [ ! -f /usr/include/tcl.h ] && [ -f /usr/include/tcl8.6/tcl.h ]; then
+    info "Creating /usr/include/tcl.h symlink -> /usr/include/tcl8.6/tcl.h"
+    sudo ln -sf /usr/include/tcl8.6/tcl.h /usr/include/tcl.h
+fi
+if [ ! -f /usr/include/tk.h ] && [ -f /usr/include/tcl8.6/tk.h ]; then
+    info "Creating /usr/include/tk.h symlink -> /usr/include/tcl8.6/tk.h"
+    sudo ln -sf /usr/include/tcl8.6/tk.h /usr/include/tk.h
+fi
 
 # ── 2. Ensure venv exists ───────────────────────────────────────────────────
 if [ ! -f "$VENV/bin/python3" ]; then

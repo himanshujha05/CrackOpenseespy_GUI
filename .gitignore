@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+*.npz
+*.png
+panel_analysis_runs/
+*.tmp
+*.bak
+*.swp
