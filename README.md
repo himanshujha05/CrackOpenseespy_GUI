@@ -5,11 +5,13 @@
 ## What This Project Does
 
 The app lets you:
-- Build a 2D plane-stress RC panel mesh (`tri31` elements)
+- Build a 2D plane-stress RC panel mesh using OpenSees 3-node triangular elements (`tri31`)
 - Insert horizontal crack interfaces by duplicating mesh rows
 - Assign crack constitutive behavior per crack line
 - Apply boundary conditions and loads interactively
 - Run nonlinear static analysis and visualize response curves and fields
+
+In simple terms, `tri31` is the standard 2D triangle element used to model the concrete panel body. Crack behavior is then added at the interfaces between duplicated node rows.
 
 Primary GUI file: `gui_wsl.py`
 
