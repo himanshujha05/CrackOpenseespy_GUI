@@ -7,6 +7,7 @@ __pycache__/
 *.npz
 *.png
 panel_analysis_runs/
+panel_gui_config.json
 *.tmp
 *.bak
 *.swp

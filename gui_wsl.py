@@ -24,12 +24,13 @@ from PyQt5.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView,
     QGroupBox, QDoubleSpinBox, QSpinBox, QFileDialog,
     QMessageBox, QCheckBox, QSplitter, QScrollArea,
-    QFrame, QSlider,
+    QFrame, QSlider, QAbstractItemView, QDialog, QAbstractSpinBox,
+    QSizePolicy,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt5.QtGui import (
     QFont, QPainter, QPen, QBrush, QColor,
-    QPainterPath, QFontMetrics,
+    QPainterPath, QFontMetrics, QImage,
 )
 
 import matplotlib
@@ -43,14 +44,14 @@ from matplotlib.tri import Triangulation
 BG_DEEP  = "#0d1117"
 BG_PANEL = "#161b22"
 BG_CARD  = "#1c2128"
-BG_INPUT = "#0d1117"
-BORDER   = "#30363d"
+BG_INPUT = "#111827"
+BORDER   = "#455063"
 C1       = "#58a6ff"   # blue
 C2       = "#3fb950"   # green
 C3       = "#f78166"   # red
 C4       = "#d2a679"   # amber
 TXT      = "#e6edf3"
-TXTS     = "#8b949e"
+TXTS     = "#b8c2cf"
 CRACK_BELOW = "#ff8c42"   # orange  — node on the BELOW side of a crack
 CRACK_ABOVE = "#c084fc"   # violet  — node on the ABOVE side of a crack
 
@@ -58,27 +59,28 @@ STYLE = f"""
 QMainWindow,QDialog{{background:{BG_DEEP};}}
 QWidget{{background:{BG_DEEP};color:{TXT};
   font-family:'Segoe UI','Cascadia Code','Consolas',sans-serif;font-size:13px;}}
+QScrollArea,QScrollArea>QWidget,QScrollArea>QWidget>QWidget{{background:{BG_DEEP};}}
 QTabWidget::pane{{border:1px solid {BORDER};background:{BG_PANEL};border-radius:0 4px 4px 4px;}}
 QTabBar::tab{{background:{BG_DEEP};color:{TXTS};padding:9px 20px;
   border:1px solid {BORDER};border-bottom:none;border-radius:4px 4px 0 0;
-  font-weight:bold;font-size:12px;margin-right:2px;}}
+    font-weight:bold;font-size:12px;margin-right:2px;min-height:20px;}}
 QTabBar::tab:selected{{background:{BG_PANEL};color:{C1};border-bottom:2px solid {C1};}}
 QTabBar::tab:hover:!selected{{color:{TXT};background:{BG_CARD};}}
 QGroupBox{{border:1px solid {BORDER};border-radius:6px;margin-top:16px;
-  padding:14px 10px 10px 10px;color:{C1};font-weight:bold;font-size:12px;letter-spacing:.6px;}}
-QGroupBox::title{{subcontrol-origin:margin;left:12px;padding:0 6px;background:{BG_PANEL};}}
+    padding:16px 12px 12px 12px;color:{C1};font-weight:bold;font-size:12px;letter-spacing:.6px;}}
+QGroupBox::title{{subcontrol-origin:margin;left:12px;padding:0 8px;background:{BG_PANEL};}}
 QLineEdit,QDoubleSpinBox,QSpinBox,QComboBox{{
   background:{BG_INPUT};border:1px solid {BORDER};border-radius:4px;
-  padding:6px 10px;color:{TXT};font-size:13px;}}
+    padding:6px 10px;color:{TXT};font-size:13px;min-height:32px;
+    selection-background-color:{C1};selection-color:{BG_DEEP};}}
 QLineEdit:focus,QDoubleSpinBox:focus,QSpinBox:focus,QComboBox:focus{{
   border:1px solid {C1};background:{BG_CARD};}}
-QDoubleSpinBox::up-button,QDoubleSpinBox::down-button,
-QSpinBox::up-button,QSpinBox::down-button{{background:{BG_CARD};border:none;width:18px;}}
+QComboBox{{padding-right:30px;}}
 QComboBox QAbstractItemView{{background:{BG_CARD};border:1px solid {BORDER};
   selection-background-color:{C1};color:{TXT};}}
 QComboBox::drop-down{{border:none;width:22px;}}
 QPushButton{{background:{C1};color:{BG_DEEP};border-radius:5px;padding:8px 20px;
-  font-weight:bold;font-size:12px;border:none;}}
+    font-weight:bold;font-size:12px;border:1px solid transparent;min-height:34px;}}
 QPushButton:hover{{background:#79b8ff;}}
 QPushButton:pressed{{background:#388bfd;}}
 QPushButton:disabled{{background:{BORDER};color:{TXTS};}}
@@ -105,8 +107,8 @@ QScrollBar:vertical{{background:{BG_INPUT};width:8px;border-radius:4px;}}
 QScrollBar::handle:vertical{{background:{BORDER};border-radius:4px;min-height:20px;}}
 QScrollBar::handle:vertical:hover{{background:{TXTS};}}
 QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{{height:0;}}
-QLabel#heading{{color:{C1};font-size:17px;font-weight:bold;letter-spacing:1px;}}
-QLabel#sub{{color:{TXTS};font-size:12px;}}
+QLabel#heading{{color:{C1};font-size:18px;font-weight:bold;letter-spacing:1px;}}
+QLabel#sub{{color:{TXTS};font-size:12px;line-height:1.35;}}
 QLabel#param{{color:{C4};font-size:12px;font-weight:bold;}}
 QToolTip{{background:{BG_CARD};color:{TXT};border:1px solid {C1};padding:6px;
   border-radius:4px;font-size:12px;}}
@@ -114,7 +116,10 @@ QCheckBox{{color:{TXT};spacing:8px;font-size:13px;}}
 QCheckBox::indicator{{width:15px;height:15px;border:1px solid {BORDER};
   border-radius:3px;background:{BG_INPUT};}}
 QCheckBox::indicator:checked{{background:{C1};border-color:{C1};}}
+QFormLayout QLabel{{color:{TXT};font-size:13px;}}
 """
+
+APP_CONFIG_FILE = Path(__file__).with_name("panel_gui_config.json")
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
 def win_to_wsl(p):
@@ -127,12 +132,14 @@ def mkd(path): Path(path).mkdir(parents=True, exist_ok=True)
 def dsb(val, lo, hi, dec=4, step=0.001, w=155, tip=""):
     sb = QDoubleSpinBox()
     sb.setRange(lo, hi); sb.setDecimals(dec)
-    sb.setSingleStep(step); sb.setValue(val); sb.setFixedWidth(w)
+    sb.setSingleStep(step); sb.setValue(val)
+    sb.setMinimumWidth(w); sb.setMinimumHeight(34)
     if tip: sb.setToolTip(tip)
     return sb
 
 def isb(val, lo, hi, w=120, tip=""):
-    sb = QSpinBox(); sb.setRange(lo, hi); sb.setValue(val); sb.setFixedWidth(w)
+    sb = QSpinBox(); sb.setRange(lo, hi); sb.setValue(val)
+    sb.setMinimumWidth(w); sb.setMinimumHeight(34)
     if tip: sb.setToolTip(tip)
     return sb
 
@@ -145,6 +152,46 @@ def sep():
     f = QFrame(); f.setFrameShape(QFrame.HLine)
     f.setStyleSheet(f"color:{BORDER};background:{BORDER};max-height:1px;")
     return f
+
+def snap_crack_y(y, H, ny, allow_edge=True):
+    H = max(float(H), 1e-9)
+    ny = max(int(ny), 1)
+    dy = H / ny
+    edge_tol = 0.45 * dy if allow_edge else 0.0
+    if allow_edge and y <= edge_tol:
+        return 0.0
+    if allow_edge and y >= H - edge_tol:
+        return H
+    j = min(range(ny + 1), key=lambda idx: abs(idx * dy - y))
+    return round(j * dy, 8)
+
+def deg_to_axes(theta_deg):
+    th = math.radians(float(theta_deg))
+    tx, ty = math.cos(th), math.sin(th)
+    nx, ny = -ty, tx
+    return tx, ty, nx, ny
+
+def point_to_segment_distance(px, py, ax, ay, bx, by):
+    vx = bx - ax
+    vy = by - ay
+    seg2 = vx * vx + vy * vy
+    if seg2 <= 1e-12:
+        return math.hypot(px - ax, py - ay)
+    t = ((px - ax) * vx + (py - ay) * vy) / seg2
+    t = max(0.0, min(1.0, t))
+    qx = ax + t * vx
+    qy = ay + t * vy
+    return math.hypot(px - qx, py - qy)
+
+def point_to_polyline_distance(px, py, pts):
+    if not pts:
+        return float("inf")
+    if len(pts) == 1:
+        return math.hypot(px - pts[0][0], py - pts[0][1])
+    return min(
+        point_to_segment_distance(px, py, pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1])
+        for i in range(len(pts) - 1)
+    )
 
 
 # ─── Mesh generation ──────────────────────────────────────────────────────────
@@ -225,6 +272,7 @@ class PanelMeshCanvas(QWidget):
     crack_y_added        = pyqtSignal(float)
     crack_y_removed      = pyqtSignal(float)
     hand_strokes_changed = pyqtSignal()
+    hand_stroke_erased   = pyqtSignal(int)
 
     MODE_SELECT = "select"
     MODE_CRACK  = "crack"
@@ -252,6 +300,9 @@ class PanelMeshCanvas(QWidget):
         self.hand_strokes = []       # list of completed strokes; each is [(x,y), ...] model coords
         self._cur_stroke  = []       # stroke currently being drawn
         self._drawing     = False    # True while LMB is held in MODE_DRAW
+        self._bg_image    = QImage()
+        self._bg_path     = ""
+        self._highlighted_pairs = set()
         self.setMouseTracking(True)
 
     # ── coord transforms ──────────────────────────────────────────────────────
@@ -316,10 +367,71 @@ class PanelMeshCanvas(QWidget):
                        else Qt.ArrowCursor)
         self.update()
 
+    def set_background_image(self, image_path):
+        image = QImage(image_path or "")
+        if image.isNull():
+            self._bg_image = QImage()
+            self._bg_path = ""
+        else:
+            self._bg_image = image
+            self._bg_path = str(image_path)
+        self.update()
+
+    def clear_background_image(self):
+        self._bg_image = QImage()
+        self._bg_path = ""
+        self.update()
+
+    def set_highlighted_crack_pairs(self, pair_keys):
+        self._highlighted_pairs = set(pair_keys or [])
+        self.update()
+
+    def background_image_path(self):
+        return self._bg_path
+
+    def _erase_nearest_stroke(self, mx, my):
+        if not self.hand_strokes:
+            return False
+        tol = max(self.panel_W, self.panel_H) * 0.03
+        best_idx = -1
+        best_dist = tol
+        for idx, stroke in enumerate(self.hand_strokes):
+            dist = point_to_polyline_distance(mx, my, stroke)
+            if dist <= best_dist:
+                best_dist = dist
+                best_idx = idx
+        if best_idx >= 0:
+            self.hand_strokes.pop(best_idx)
+            self.hand_stroke_erased.emit(best_idx)
+            self.hand_strokes_changed.emit()
+            self.update()
+            return True
+        return False
+
+    def _draw_background(self, painter):
+        if self._bg_image.isNull() or self.panel_W <= 0 or self.panel_H <= 0:
+            return
+        x0, y0 = self._to_px(0, 0)
+        x1, y1 = self._to_px(self.panel_W, self.panel_H)
+        left = min(x0, x1)
+        top = min(y0, y1)
+        width = abs(x1 - x0)
+        height = abs(y1 - y0)
+        painter.save()
+        painter.setOpacity(0.42)
+        painter.drawImage(left, top, self._bg_image.scaled(
+            width, height, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
+        painter.restore()
+
     # ── events ────────────────────────────────────────────────────────────────
     def mousePressEvent(self, event):
-        if event.button() != Qt.LeftButton: return
         px, py = event.x(), event.y()
+        if self.mode == self.MODE_DRAW and event.button() == Qt.RightButton:
+            mx, my = self._to_model(px, py)
+            if self._erase_nearest_stroke(mx, my):
+                return
+        if event.button() != Qt.LeftButton:
+            return
         if self.mode == self.MODE_SELECT:
             nid = self._node_near(px, py)
             if nid is not None:
@@ -365,6 +477,7 @@ class PanelMeshCanvas(QWidget):
         p = QPainter(self); p.setRenderHint(QPainter.Antialiasing)
         W, H = self.width(), self.height()
         p.fillRect(0, 0, W, H, QColor(BG_PANEL))
+        self._draw_background(p)
 
         if not self.nodes:
             self._paint_empty(p, W, H); p.end(); return
@@ -400,6 +513,19 @@ class PanelMeshCanvas(QWidget):
                     # Offset the above node marker slightly upward to show pair
                     p.drawLine(px1 - 3, py1 - 3, px1 + 3, py1 + 3)
                     p.drawLine(px1 - 3, py1 + 3, px1 + 3, py1 - 3)
+
+        if self._highlighted_pairs:
+            p.setPen(QPen(QColor("#ffd54f"), 2.5))
+            p.setBrush(QBrush(QColor("#ffd54f")))
+            for cp in self.crack_pairs:
+                pair_key = (int(cp[0]), int(cp[1]))
+                if pair_key not in self._highlighted_pairs:
+                    continue
+                x = float(cp[3]) if len(cp) > 3 else self.nodes.get(cp[0], (0.0, 0.0))[0]
+                y = float(cp[2])
+                px, py = self._to_px(x, y)
+                p.drawEllipse(px - 5, py - 5, 10, 10)
+                p.drawLine(px - 8, py, px + 8, py)
 
         # Nodes
         # Crack pair nodes share the same coordinates; draw below (orange, larger)
@@ -513,6 +639,7 @@ class PanelMeshCanvas(QWidget):
 
     def _paint_empty(self, p, W, H):
         if self.panel_W > 0 and self.panel_H > 0:
+            self._draw_background(p)
             x0, y0 = self._to_px(0, 0); x1, y1 = self._to_px(self.panel_W, self.panel_H)
             p.setPen(QPen(QColor(BORDER), 1.5)); p.setBrush(Qt.NoBrush)
             p.drawRect(x0, y1, x1 - x0, y0 - y1)
@@ -583,6 +710,24 @@ class GeometryTab(QWidget):
         fd.addRow("Thickness t (m):", self.sb_t)
         lv.addWidget(grp_dim)
 
+        grp_img = QGroupBox("Background Image")
+        vi = QVBoxLayout(grp_img); vi.setSpacing(6)
+        vi.addWidget(mk_lbl(
+            "Upload a cracked-panel photo and trace over it on the canvas.\n"
+            "The image is scaled to the current panel outline.", "sub"))
+        img_row = QHBoxLayout()
+        self.btn_upload_img = QPushButton("Upload Image")
+        self.btn_upload_img.setObjectName("flat")
+        self.btn_clear_img = QPushButton("Clear Image")
+        self.btn_clear_img.setObjectName("flat")
+        img_row.addWidget(self.btn_upload_img)
+        img_row.addWidget(self.btn_clear_img)
+        img_row.addStretch()
+        vi.addLayout(img_row)
+        self.lbl_bg_img = mk_lbl("No background image loaded.", "sub")
+        vi.addWidget(self.lbl_bg_img)
+        lv.addWidget(grp_img)
+
         # Mesh density
         grp_mesh = QGroupBox("Mesh Density")
         fm = QFormLayout(grp_mesh); fm.setSpacing(6)
@@ -648,10 +793,10 @@ class GeometryTab(QWidget):
         # ── Hand-draw sub-section ──────────────────────────────────────────
         vc.addWidget(sep())
         row_hd = QHBoxLayout()
-        self.btn_hand_draw   = QPushButton("✍ Hand Draw")
+        self.btn_hand_draw   = QPushButton("Draw Crack")
         self.btn_hand_draw.setObjectName("flat")
         self.btn_hand_draw.setCheckable(True)
-        self.btn_hand_draw.setToolTip("Toggle hand-draw mode: drag to sketch a crack stroke on the canvas")
+        self.btn_hand_draw.setToolTip("Toggle draw mode: drag to sketch a crack stroke; right-click a stroke to erase it")
         self.btn_undo_stroke = QPushButton("Undo")
         self.btn_undo_stroke.setObjectName("flat")
         self.btn_undo_stroke.setToolTip("Remove the last drawn stroke")
@@ -665,7 +810,9 @@ class GeometryTab(QWidget):
         vc.addLayout(row_hd)
         self.lbl_hand_strokes = mk_lbl("hand strokes: 0", "sub")
         vc.addWidget(self.lbl_hand_strokes)
-        vc.addWidget(mk_lbl("v1: hand-draw creates horizontal crack at mean Y", "sub"))
+        vc.addWidget(mk_lbl(
+            "Drawn cracks stay visible in red and snap to the nearest mesh row for analysis input.",
+            "sub"))
         lv.addWidget(grp_crack)
 
         # Boundary conditions
@@ -790,10 +937,13 @@ class GeometryTab(QWidget):
         self._crack_ys      = []
         self._hand_strokes  = []   # mirror of canvas.hand_strokes
         self._hand_crack_ys = []   # y_mean derived from each hand stroke
+        self._bg_image_path = ""
 
         # wire
         self.btn_gen.clicked.connect(self._generate)
         self.btn_validate.clicked.connect(self._validate_mesh)
+        self.btn_upload_img.clicked.connect(self._upload_background_image)
+        self.btn_clear_img.clicked.connect(self._clear_background_image)
         self.btn_crack_mode.toggled.connect(self._toggle_crack_mode)
         self.txt_crack_y.editingFinished.connect(self._sync_crack_ys_from_text)
         self.canvas.node_clicked.connect(self._on_node_clicked)
@@ -821,6 +971,36 @@ class GeometryTab(QWidget):
     # ── handlers ──────────────────────────────────────────────────────────────
     def _on_dim_change(self):
         self.canvas.set_pending_cracks(self._crack_ys, self.sb_W.value(), self.sb_H.value())
+
+    def _sync_background_label(self):
+        if self._bg_image_path:
+            self.lbl_bg_img.setText(f"Image loaded: {Path(self._bg_image_path).name}")
+        else:
+            self.lbl_bg_img.setText("No background image loaded.")
+
+    def _upload_background_image(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Upload Background Image",
+            "",
+            "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)"
+        )
+        if not path:
+            return
+        self.canvas.set_background_image(path)
+        self._bg_image_path = self.canvas.background_image_path()
+        self._sync_background_label()
+
+    def _clear_background_image(self):
+        self.canvas.clear_background_image()
+        self._bg_image_path = ""
+        self._sync_background_label()
+
+    def _snap_stroke_y(self, stroke):
+        if not stroke:
+            return None
+        y_mean = sum(pt[1] for pt in stroke) / len(stroke)
+        return snap_crack_y(y_mean, self.sb_H.value(), self.sb_ny.value(), allow_edge=True)
 
     def _toggle_crack_mode(self, on):
         if on:
@@ -884,33 +1064,33 @@ class GeometryTab(QWidget):
         if on:
             self.btn_crack_mode.setChecked(False)   # deactivate click-crack mode
             self.canvas.set_mode(PanelMeshCanvas.MODE_DRAW)
-            self.lbl_canvas_hint.setText("Draw mode: drag mouse to draw crack stroke.")
+            self.lbl_canvas_hint.setText("Draw mode: drag to trace a crack; right-click a red stroke to erase it.")
         else:
             self.canvas.set_mode(PanelMeshCanvas.MODE_SELECT)
             self.lbl_canvas_hint.setText("Select mode: click a node to assign BC / load")
 
     def _on_hand_strokes_changed(self):
         strokes = self.canvas.get_hand_strokes()
-        H   = max(self.sb_H.value(), 1e-6)
-        tol = 0.01 * H
-        # Compute new derived ys from current strokes
+        H = max(self.sb_H.value(), 1e-6)
+        tol = max(0.01 * H, H / max(self.sb_ny.value(), 1) * 0.25)
         new_ys = []
         for stroke in strokes:
-            if stroke:
-                y_mean = sum(pt[1] for pt in stroke) / len(stroke)
-                y_mean = max(tol, min(H - tol, y_mean))
-                new_ys.append(y_mean)
-        # Remove previously derived ys that no longer have a matching stroke
+            y_snap = self._snap_stroke_y(stroke)
+            if y_snap is not None:
+                new_ys.append(y_snap)
         for y_old in self._hand_crack_ys:
             if not any(abs(y_old - y_new) < tol for y_new in new_ys):
                 self._remove_crack_y(y_old)
-        # Add newly derived ys not already in _crack_ys
         for y_new in new_ys:
             if not any(abs(y_new - yc) < tol for yc in self._crack_ys):
                 self._add_crack_y(y_new)
         self._hand_strokes  = strokes
         self._hand_crack_ys = new_ys
-        self.lbl_hand_strokes.setText(f"hand strokes: {len(strokes)}")
+        if new_ys:
+            ys_txt = ", ".join(f"{y:.3f}" for y in new_ys)
+            self.lbl_hand_strokes.setText(f"hand strokes: {len(strokes)}  |  snapped rows: {ys_txt}")
+        else:
+            self.lbl_hand_strokes.setText(f"hand strokes: {len(strokes)}")
 
     def _generate(self):
         # Merge any Y values the user typed but hasn't committed yet
@@ -1163,6 +1343,8 @@ class GeometryTab(QWidget):
             "panel_t":  self.sb_t.value(),
             "panel_Ec": self.sb_Ec.value(),
             "panel_nu": self.sb_nu.value(),
+            "mesh_nx":  self.sb_nx.value(),
+            "mesh_ny":  self.sb_ny.value(),
             "crack_ys": list(self._crack_ys),
         }
         if md:
@@ -1174,6 +1356,7 @@ class GeometryTab(QWidget):
         p["hand_crack_strokes"] = [[[pt[0], pt[1]] for pt in s]
                                    for s in self._hand_strokes]
         p["hand_crack_ys"]      = list(self._hand_crack_ys)
+        p["background_image"]   = self._bg_image_path
         return p
 
     def get_mesh_data(self):
@@ -1187,79 +1370,231 @@ class CrackMaterialTab(QWidget):
     def __init__(self):
         super().__init__()
         self._geo_ref = None   # set by MainWindow after construction
-        outer = QVBoxLayout(self); outer.setContentsMargins(16, 16, 16, 16); outer.setSpacing(10)
+
+        # ── root layout: scroll area on top, table pinned at bottom ──────────
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # Scroll area wraps heading + buttons + both group boxes
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        # Content widget inside the scroll area
+        content = QWidget()
+        content.setMinimumWidth(480)
+        outer = QVBoxLayout(content)
+        outer.setContentsMargins(16, 16, 16, 12)
+        outer.setSpacing(10)
+
         outer.addWidget(mk_lbl("Crack Interface Materials", "heading"))
         outer.addWidget(mk_lbl(
-            "Each crack line gets its own material model and stiffness parameters.\n"
-            "Click Refresh to load crack lines from the Geometry tab.", "sub"))
+            "Each crack interface element can be edited independently.\n"
+            "Select table rows to highlight them on the mesh canvas and apply element-level properties.", "sub"))
 
-        # Controls
+        # ── Action buttons ───────────────────────────────────────────────
         ctrl = QHBoxLayout()
         self.btn_refresh = QPushButton("Refresh from Geometry")
         self.btn_refresh.setObjectName("amber")
+        self.btn_apply_sel = QPushButton("Apply to Selected")
+        self.btn_apply_sel.setObjectName("flat")
         self.btn_apply_all = QPushButton("Apply Material to All")
         self.btn_apply_all.setObjectName("flat")
+        self.btn_select_all = QPushButton("Select All")
+        self.btn_select_all.setObjectName("flat")
+        self.btn_reset_default = QPushButton("Reset to Default")
+        self.btn_reset_default.setObjectName("flat")
         ctrl.addWidget(self.btn_refresh)
+        ctrl.addWidget(self.btn_apply_sel)
         ctrl.addWidget(self.btn_apply_all)
+        ctrl.addWidget(self.btn_select_all)
+        ctrl.addWidget(self.btn_reset_default)
         ctrl.addStretch()
         outer.addLayout(ctrl)
 
-        # Global template
-        grp_tmpl = QGroupBox("Template (applied to all cracks)")
-        ft = QFormLayout(grp_tmpl); ft.setSpacing(8)
-        self.cmb_mat_tmpl = QComboBox()
-        self.cmb_mat_tmpl.addItems([
-            "MultiSurfCrack2D",  # NEW: Your custom multi-surface model
+        # ── Shared widget styling ────────────────────────────────────────
+        _IN  = "#1d2f45"    # input background — distinct navy
+        _BD  = "#4d8fcc"    # blue border
+        _TXT = TXT
+        crack_font = QFont("Segoe UI", 11)
+        SP_EXP = QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        combo_css = (
+            f"QComboBox{{background:{_IN};color:{_TXT};border:2px solid {_BD};"
+            f"border-radius:4px;padding:4px 8px;min-height:28px;font-size:12px;}}"
+            f"QComboBox::drop-down{{width:22px;border:none;background:{_IN};}}"
+            f"QComboBox::down-arrow{{width:10px;height:10px;}}"
+            f"QComboBox QAbstractItemView{{background:#1a2738;color:{_TXT};"
+            f"border:1px solid {_BD};selection-background-color:#2d5a8e;}}"
+        )
+        spin_css = (
+            f"QDoubleSpinBox,QSpinBox{{background:{_IN};color:{_TXT};border:2px solid {_BD};"
+            f"border-radius:4px;padding:4px 8px;min-height:28px;font-size:12px;}}"
+            f"QDoubleSpinBox::up-button,QDoubleSpinBox::down-button,"
+            f"QSpinBox::up-button,QSpinBox::down-button"
+            f"{{width:0;height:0;border:none;margin:0;padding:0;}}"
+        )
+
+        def _make_combo(items, tip=""):
+            cb = QComboBox()
+            cb.addItems(items)
+            if tip:
+                cb.setToolTip(tip)
+            cb.setFont(crack_font)
+            cb.setStyleSheet(combo_css)
+            cb.setSizePolicy(SP_EXP)
+            cb.setMinimumWidth(160)
+            cb.setMinimumHeight(34)
+            return cb
+
+        def _make_dsb(val, lo, hi, dec=4, step=0.001, tip=""):
+            sb = QDoubleSpinBox()
+            sb.setRange(lo, hi)
+            sb.setDecimals(dec)
+            sb.setSingleStep(step)
+            sb.setValue(val)
+            if tip:
+                sb.setToolTip(tip)
+            sb.setFont(crack_font)
+            sb.setButtonSymbols(QAbstractSpinBox.NoButtons)
+            sb.setAlignment(Qt.AlignLeft)
+            sb.setStyleSheet(spin_css)
+            sb.setSizePolicy(SP_EXP)
+            sb.setMinimumWidth(160)
+            sb.setMinimumHeight(34)
+            return sb
+
+        mat_items = [
+            "MultiSurfCrack2D",
+            "EPPGap Macro (4-spring)",
             "Elastic",
             "ElasticPPGap",
-            "CustomBilinear"
-        ])
-        self.cmb_mat_tmpl.setToolTip(
-            "MultiSurfCrack2D: plasticity-based multi-yield-surface crack model (requires OpenSees compilation)\n"
+            "CustomBilinear",
+        ]
+        mat_tip = (
+            "MultiSurfCrack2D: plasticity-based multi-yield-surface crack model\n"
+            "EPPGap Macro (4-spring): 4 parallel ElasticPPGap shear springs + 1 elastic normal spring\n"
             "Elastic: linear spring (kn/kt)\n"
             "ElasticPPGap: elastic + perfect plastic gap spring\n"
-            "CustomBilinear: piecewise linear force-displacement")
+            "CustomBilinear: piecewise linear force-displacement"
+        )
 
-        self.sb_kn_tmpl  = dsb(210.0, 1e-6, 1e9, 2, 10., w=130, tip="Normal stiffness kn (kN/m per link)")
-        self.sb_kt_tmpl  = dsb(5.95,  1e-6, 1e9, 3, 1.,  w=130, tip="Shear stiffness kt (kN/m per link)")
-        self.sb_gap_tmpl = dsb(0.001, 0., 10.,  4, 0.001, w=130, tip="Gap before spring engages (m) — ElasticPPGap only")
-        self.sb_eta_tmpl = dsb(0.02,  0., 1.,   3, 0.01,  w=130, tip="Hardening ratio η — ElasticPPGap only")
+        # ── Template group box ───────────────────────────────────────────
+        grp_tmpl = QGroupBox("Template (applied to all cracks)")
+        grp_tmpl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        ft = QFormLayout()
+        ft.setContentsMargins(12, 12, 12, 12)
+        ft.setHorizontalSpacing(16)
+        ft.setVerticalSpacing(8)
+        ft.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        ft.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+        ft.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
-        # Auto kn/kt from concrete
-        auto_row = QHBoxLayout()
-        self.sb_fc_auto = dsb(30., 1., 200., 1, 1., w=100, tip="f'c (MPa) for auto kn/kt")
-        self.sb_w0_auto = dsb(0.1, 0.001, 5., 3, 0.01, w=100, tip="w0 (mm) for auto kn/kt")
+        self.cmb_mat_tmpl   = _make_combo(mat_items, mat_tip)
+        self.sb_width_tmpl  = _make_dsb(0.001, 0., 10.,   4, 0.001, "Initial crack width (m)")
+        self.sb_ang_tmpl    = _make_dsb(0.0, -180., 180., 1, 1.0,   "Crack orientation (deg)")
+        self.sb_kn_tmpl     = _make_dsb(210.0, 1e-6, 1e9, 2, 10.,  "Normal stiffness kn (kN/m per link)")
+        self.sb_kt_tmpl     = _make_dsb(5.95,  1e-6, 1e9, 3, 1.,   "Shear stiffness kt (kN/m per link)")
+        self.sb_gap_tmpl    = _make_dsb(0.001, 0., 10.,   4, 0.001, "Gap before spring engages (m)")
+        self.sb_eta_tmpl    = _make_dsb(0.02,  0., 1.,    3, 0.01,  "Hardening ratio η")
+
+        ft.addRow("Material type:",    self.cmb_mat_tmpl)
+        ft.addRow("Width (m):",        self.sb_width_tmpl)
+        ft.addRow("Orientation (deg):", self.sb_ang_tmpl)
+        ft.addRow("kn (kN/m):",        self.sb_kn_tmpl)
+        ft.addRow("kt (kN/m):",        self.sb_kt_tmpl)
+        ft.addRow("gap (m):",          self.sb_gap_tmpl)
+        ft.addRow("η hardening:",      self.sb_eta_tmpl)
+
+        # Auto kn/kt row
+        auto_row = QHBoxLayout(); auto_row.setSpacing(6)
+        self.sb_fc_auto = _make_dsb(30., 1., 200., 1, 1., "f'c (MPa) for auto kn/kt")
+        self.sb_w0_auto = _make_dsb(0.1, 0.001, 5., 3, 0.01, "w0 (mm) for auto kn/kt")
+        self.sb_fc_auto.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self.sb_fc_auto.setMinimumWidth(80); self.sb_fc_auto.setMaximumWidth(110)
+        self.sb_w0_auto.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self.sb_w0_auto.setMinimumWidth(80); self.sb_w0_auto.setMaximumWidth(110)
         self.btn_auto_knkt = QPushButton("Auto kn/kt")
         self.btn_auto_knkt.setObjectName("flat")
         self.btn_auto_knkt.setToolTip("Compute kn/kt from Divakar Eq.31/32")
-        auto_row.addWidget(mk_lbl("f'c:")); auto_row.addWidget(self.sb_fc_auto)
-        auto_row.addWidget(mk_lbl("  w0 (mm):")); auto_row.addWidget(self.sb_w0_auto)
-        auto_row.addWidget(self.btn_auto_knkt); auto_row.addStretch()
+        auto_row.addWidget(mk_lbl("f'c:"))
+        auto_row.addWidget(self.sb_fc_auto)
+        auto_row.addSpacing(8)
+        auto_row.addWidget(mk_lbl("w0 (mm):"))
+        auto_row.addWidget(self.sb_w0_auto)
+        auto_row.addSpacing(8)
+        auto_row.addWidget(self.btn_auto_knkt)
+        auto_row.addStretch()
+        auto_wrap = QWidget(); auto_wrap.setLayout(auto_row)
+        ft.addRow("", auto_wrap)
 
-        ft.addRow("Material type:", self.cmb_mat_tmpl)
-        ft.addRow("kn (kN/m):",     self.sb_kn_tmpl)
-        ft.addRow("kt (kN/m):",     self.sb_kt_tmpl)
-        ft.addRow("gap (m):",        self.sb_gap_tmpl)
-        ft.addRow("η hardening:",    self.sb_eta_tmpl)
-        ft.addRow("",                auto_row)
+        grp_tmpl.setLayout(ft)
         outer.addWidget(grp_tmpl)
 
-        # Per-crack table
-        grp_tbl = QGroupBox("Per-Crack Parameters")
+        # ── Selected Element Editor group box ────────────────────────────
+        grp_edit = QGroupBox("Selected Element Editor")
+        grp_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        fe = QFormLayout()
+        fe.setContentsMargins(12, 12, 12, 12)
+        fe.setHorizontalSpacing(16)
+        fe.setVerticalSpacing(8)
+        fe.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        fe.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+        fe.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+        self.lbl_selected = mk_lbl("No crack element selected.", "sub")
+        self.cmb_mat_sel  = _make_combo(mat_items)
+        self.sb_width_sel = _make_dsb(0.001, 0., 10.,   4, 0.001)
+        self.sb_ang_sel   = _make_dsb(0.0, -180., 180., 1, 1.0)
+        self.sb_kn_sel    = _make_dsb(210.0, 1e-6, 1e9, 2, 10.)
+        self.sb_kt_sel    = _make_dsb(5.95,  1e-6, 1e9, 3, 1.)
+        self.sb_gap_sel   = _make_dsb(0.001, 0., 10.,   4, 0.001)
+        self.sb_eta_sel   = _make_dsb(0.02,  0., 1.,    3, 0.01)
+
+        fe.addRow(self.lbl_selected)
+        fe.addRow("Material:",          self.cmb_mat_sel)
+        fe.addRow("Width (m):",         self.sb_width_sel)
+        fe.addRow("Orientation (deg):", self.sb_ang_sel)
+        fe.addRow("kn (kN/m):",         self.sb_kn_sel)
+        fe.addRow("kt (kN/m):",         self.sb_kt_sel)
+        fe.addRow("gap (m):",           self.sb_gap_sel)
+        fe.addRow("η:",                 self.sb_eta_sel)
+
+        grp_edit.setLayout(fe)
+        outer.addWidget(grp_edit)
+        outer.addStretch()
+
+        scroll.setWidget(content)
+        root.addWidget(scroll, stretch=1)  # editors get vertical space to grow
+
+        # ── Crack Element Table (pinned below scroll area) ───────────────
+        grp_tbl = QGroupBox("Crack Element Table")
         vt = QVBoxLayout(grp_tbl); vt.setSpacing(6)
         vt.addWidget(mk_lbl(
-            "Double-click a cell to edit. Material: MultiSurfCrack2D / Elastic / ElasticPPGap / CustomBilinear.\n"
-            "For MultiSurfCrack2D: set kn=normal stiffness, kt=shear stiffness. Additional parameters auto-filled.", "sub"))
-        self.tbl = QTableWidget(0, 6)
-        self.tbl.setHorizontalHeaderLabels(["Y pos (m)", "Material", "kn (kN/m)", "kt (kN/m)", "gap (m)", "η"])
+            "Each row is one interface element between two duplicated crack nodes.\n"
+            "Selecting rows highlights those elements on the Geometry canvas in yellow.", "sub"))
+        self.tbl = QTableWidget(0, 10)
+        self.tbl.setHorizontalHeaderLabels([
+            "Elem", "Y pos (m)", "X pos (m)", "Width (m)", "Orient (deg)",
+            "Material", "kn (kN/m)", "kt (kN/m)", "gap (m)", "η"
+        ])
         self.tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tbl.setSelectionMode(QAbstractItemView.ExtendedSelection)
         vt.addWidget(self.tbl, stretch=1)
-        outer.addWidget(grp_tbl, stretch=1)
+        root.addWidget(grp_tbl, stretch=1)
 
-        # Wire
+        # ── Wire signals ─────────────────────────────────────────────────
         self.btn_refresh.clicked.connect(self.refresh_from_geometry)
+        self.btn_apply_sel.clicked.connect(self._apply_editor_to_selected)
         self.btn_apply_all.clicked.connect(self._apply_template_to_all)
+        self.btn_select_all.clicked.connect(self.tbl.selectAll)
+        self.btn_reset_default.clicked.connect(self._reset_default)
         self.btn_auto_knkt.clicked.connect(self._auto_kn_kt)
+        self.tbl.itemSelectionChanged.connect(self._on_selection_changed)
 
     def _auto_kn_kt(self):
         # Divakar Eq.31/32 use crack width in mm and f'c in MPa.
@@ -1270,21 +1605,165 @@ class CrackMaterialTab(QWidget):
         self.sb_kn_tmpl.setValue(kn)
         self.sb_kt_tmpl.setValue(kt)
 
+    def _template_values(self):
+        return dict(
+            width=self.sb_width_tmpl.value(),
+            orientation_deg=self.sb_ang_tmpl.value(),
+            mat_type=self.cmb_mat_tmpl.currentText(),
+            kn=self.sb_kn_tmpl.value(),
+            kt=self.sb_kt_tmpl.value(),
+            gap=self.sb_gap_tmpl.value(),
+            eta=self.sb_eta_tmpl.value(),
+        )
+
+    def _editor_values(self):
+        return dict(
+            width=self.sb_width_sel.value(),
+            orientation_deg=self.sb_ang_sel.value(),
+            mat_type=self.cmb_mat_sel.currentText(),
+            kn=self.sb_kn_sel.value(),
+            kt=self.sb_kt_sel.value(),
+            gap=self.sb_gap_sel.value(),
+            eta=self.sb_eta_sel.value(),
+        )
+
+    def _selected_rows(self):
+        return sorted({idx.row() for idx in self.tbl.selectionModel().selectedRows()})
+
+    def _row_meta(self, row):
+        item = self.tbl.item(row, 0)
+        return item.data(Qt.UserRole) if item is not None else {}
+
+    def _default_row_values(self, cp, idx):
+        tx, ty = (float(cp[4]), float(cp[5])) if len(cp) >= 6 else (1.0, 0.0)
+        ang = math.degrees(math.atan2(ty, tx))
+        vals = self._template_values()
+        vals["orientation_deg"] = ang
+        vals.setdefault("width", vals["gap"])
+        vals["element_index"] = idx + 1
+        vals["y"] = float(cp[2])
+        vals["x"] = float(cp[3]) if len(cp) > 3 else 0.0
+        vals["below_node"] = int(cp[0])
+        vals["above_node"] = int(cp[1])
+        return vals
+
+    def _set_row_values(self, row, vals, meta=None):
+        meta = dict(meta or self._row_meta(row) or {})
+        meta["pair_key"] = (int(vals["below_node"]), int(vals["above_node"]))
+        meta["default_values"] = dict(meta.get("default_values") or {
+            "width": vals["width"],
+            "orientation_deg": vals["orientation_deg"],
+            "mat_type": vals["mat_type"],
+            "kn": vals["kn"],
+            "kt": vals["kt"],
+            "gap": vals["gap"],
+            "eta": vals["eta"],
+        })
+        cells = [
+            str(int(vals["element_index"])),
+            f"{vals['y']:.4f}",
+            f"{vals['x']:.4f}",
+            f"{vals['width']:.4f}",
+            f"{vals['orientation_deg']:.1f}",
+            vals["mat_type"],
+            f"{vals['kn']:.3f}",
+            f"{vals['kt']:.3f}",
+            f"{vals['gap']:.4f}",
+            f"{vals['eta']:.3f}",
+        ]
+        for col, text in enumerate(cells):
+            item = self.tbl.item(row, col)
+            if item is None:
+                item = QTableWidgetItem(text)
+                self.tbl.setItem(row, col, item)
+            else:
+                item.setText(text)
+            if col == 0:
+                item.setData(Qt.UserRole, meta)
+
+    def _set_editor_values(self, vals):
+        self.cmb_mat_sel.setCurrentText(vals["mat_type"])
+        self.sb_width_sel.setValue(float(vals["width"]))
+        self.sb_ang_sel.setValue(float(vals["orientation_deg"]))
+        self.sb_kn_sel.setValue(float(vals["kn"]))
+        self.sb_kt_sel.setValue(float(vals["kt"]))
+        self.sb_gap_sel.setValue(float(vals["gap"]))
+        self.sb_eta_sel.setValue(float(vals["eta"]))
+
+    def _row_values(self, row):
+        meta = self._row_meta(row)
+        pair_key = tuple(meta.get("pair_key", (0, 0)))
+        return dict(
+            element_index=int(float(self.tbl.item(row, 0).text())),
+            y=float(self.tbl.item(row, 1).text()),
+            x=float(self.tbl.item(row, 2).text()),
+            width=float(self.tbl.item(row, 3).text()),
+            orientation_deg=float(self.tbl.item(row, 4).text()),
+            mat_type=self.tbl.item(row, 5).text(),
+            kn=float(self.tbl.item(row, 6).text()),
+            kt=float(self.tbl.item(row, 7).text()),
+            gap=float(self.tbl.item(row, 8).text()),
+            eta=float(self.tbl.item(row, 9).text()),
+            below_node=int(pair_key[0]),
+            above_node=int(pair_key[1]),
+        )
+
     def _apply_template_to_all(self):
-        mat  = self.cmb_mat_tmpl.currentText()
-        kn   = self.sb_kn_tmpl.value()
-        kt   = self.sb_kt_tmpl.value()
-        gap  = self.sb_gap_tmpl.value()
-        eta  = self.sb_eta_tmpl.value()
+        vals = self._template_values()
         for r in range(self.tbl.rowCount()):
-            self.tbl.item(r, 1).setText(mat)
-            self.tbl.item(r, 2).setText(f"{kn:.3f}")
-            self.tbl.item(r, 3).setText(f"{kt:.3f}")
-            self.tbl.item(r, 4).setText(f"{gap:.4f}")
-            self.tbl.item(r, 5).setText(f"{eta:.3f}")
+            row_vals = self._row_values(r)
+            row_vals.update(vals)
+            self._set_row_values(r, row_vals)
+        if self.tbl.rowCount():
+            self.tbl.selectRow(0)
+
+    def _apply_editor_to_selected(self):
+        rows = self._selected_rows()
+        if not rows:
+            QMessageBox.information(self, "No Selection", "Select one or more crack elements first.")
+            return
+        vals = self._editor_values()
+        for row in rows:
+            row_vals = self._row_values(row)
+            row_vals.update(vals)
+            self._set_row_values(row, row_vals)
+        self._sync_canvas_highlight()
+
+    def _reset_default(self):
+        rows = self._selected_rows() or list(range(self.tbl.rowCount()))
+        for row in rows:
+            meta = self._row_meta(row)
+            default_vals = dict(meta.get("default_values", self._template_values()))
+            row_vals = self._row_values(row)
+            row_vals.update(default_vals)
+            self._set_row_values(row, row_vals, meta)
+        self._on_selection_changed()
 
     def set_geo_ref(self, geo_tab):
         self._geo_ref = geo_tab
+
+    def _sync_canvas_highlight(self):
+        geo = self._geo_ref
+        if geo is None:
+            return
+        pair_keys = []
+        for row in self._selected_rows():
+            meta = self._row_meta(row)
+            if meta.get("pair_key"):
+                pair_keys.append(tuple(meta["pair_key"]))
+        geo.canvas.set_highlighted_crack_pairs(pair_keys)
+
+    def _on_selection_changed(self):
+        rows = self._selected_rows()
+        if not rows:
+            self.lbl_selected.setText("No crack element selected.")
+            self._sync_canvas_highlight()
+            return
+        first = self._row_values(rows[0])
+        self.lbl_selected.setText(
+            f"Selected {len(rows)} element(s)  |  Elem {first['element_index']} at x={first['x']:.3f}, y={first['y']:.3f}")
+        self._set_editor_values(first)
+        self._sync_canvas_highlight()
 
     def refresh_from_geometry(self, geo_tab=None):
         geo = geo_tab or self._geo_ref
@@ -1293,54 +1772,41 @@ class CrackMaterialTab(QWidget):
         if md is None:
             QMessageBox.information(self, "No Mesh", "Generate a mesh on the Geometry tab first.")
             return
-        crack_ys = sorted(set(round(cp[2], 6) for cp in md["crack_pairs"]))
-        mat  = self.cmb_mat_tmpl.currentText()
-        kn   = self.sb_kn_tmpl.value()
-        kt   = self.sb_kt_tmpl.value()
-        gap  = self.sb_gap_tmpl.value()
-        eta  = self.sb_eta_tmpl.value()
-        # Preserve existing edits
+        crack_pairs = list(md["crack_pairs"])
         existing = {}
         for r in range(self.tbl.rowCount()):
             try:
-                y_item = self.tbl.item(r, 0)
-                if y_item is None:
+                vals = self._row_values(r)
+                if not vals["below_node"] or not vals["above_node"]:
                     continue
-                y = float(y_item.text())
-                row_data = []
-                for c in range(6):
-                    cell = self.tbl.item(r, c)
-                    row_data.append(cell.text() if cell is not None else "")
-                existing[round(y, 6)] = row_data
+                existing[(vals["below_node"], vals["above_node"])] = vals
             except Exception:
                 pass
-        self.tbl.setRowCount(len(crack_ys))
-        for i, y in enumerate(crack_ys):
-            yr = round(y, 6)
-            if yr in existing:
-                row_data = existing[yr]
-                for c, txt in enumerate(row_data):
-                    self.tbl.setItem(i, c, QTableWidgetItem(txt))
+        self.tbl.setRowCount(len(crack_pairs))
+        for i, cp in enumerate(crack_pairs):
+            pair_key = (int(cp[0]), int(cp[1]))
+            if pair_key in existing:
+                vals = existing[pair_key]
+                vals["element_index"] = i + 1
+                vals["y"] = float(cp[2])
+                vals["x"] = float(cp[3]) if len(cp) > 3 else vals["x"]
+                vals["below_node"] = pair_key[0]
+                vals["above_node"] = pair_key[1]
+                self._set_row_values(i, vals)
             else:
-                self.tbl.setItem(i, 0, QTableWidgetItem(f"{y:.4f}"))
-                self.tbl.setItem(i, 1, QTableWidgetItem(mat))
-                self.tbl.setItem(i, 2, QTableWidgetItem(f"{kn:.3f}"))
-                self.tbl.setItem(i, 3, QTableWidgetItem(f"{kt:.3f}"))
-                self.tbl.setItem(i, 4, QTableWidgetItem(f"{gap:.4f}"))
-                self.tbl.setItem(i, 5, QTableWidgetItem(f"{eta:.3f}"))
+                vals = self._default_row_values(cp, i)
+                self._set_row_values(i, vals, {"default_values": dict(vals)})
+        if crack_pairs:
+            self.tbl.selectRow(0)
+        else:
+            self._on_selection_changed()
 
     def get_params(self):
         data = []
         for r in range(self.tbl.rowCount()):
             try:
-                data.append({
-                    "y":        float(self.tbl.item(r, 0).text()),
-                    "mat_type": self.tbl.item(r, 1).text(),
-                    "kn":       float(self.tbl.item(r, 2).text()),
-                    "kt":       float(self.tbl.item(r, 3).text()),
-                    "gap":      float(self.tbl.item(r, 4).text()),
-                    "eta":      float(self.tbl.item(r, 5).text()),
-                })
+                vals = self._row_values(r)
+                data.append(vals)
             except Exception:
                 pass
         return {"crack_mat_data": data}
@@ -1360,6 +1826,12 @@ class AnalysisTab(QWidget):
 
         self.cmb_type = QComboBox()
         self.cmb_type.addItems(["DisplacementControl", "LoadControl"])
+        self.cmb_system = QComboBox()
+        self.cmb_system.addItems(["UmfPack", "BandGeneral", "ProfileSPD"])
+        self.cmb_constraints = QComboBox()
+        self.cmb_constraints.addItems(["Plain", "Transformation", "Lagrange"])
+        self.cmb_numberer = QComboBox()
+        self.cmb_numberer.addItems(["RCM", "Plain"])
         self.sb_di  = dsb(0.0005, 1e-7, 1e3, 6, 0.0001,
                           tip="Displacement increment per step (m, DisplacementControl)")
         self.sb_tgt = dsb(0.05,   0.0,  1e4, 6, 0.01,
@@ -1373,6 +1845,9 @@ class AnalysisTab(QWidget):
         self.sb_lam  = dsb(50., 0.1, 1e9, 1, 5.,           tip="Stop if load factor exceeds this value")
 
         form.addRow("Analysis type:",       self.cmb_type)
+        form.addRow("Equation solver:",     self.cmb_system)
+        form.addRow("Constraint handler:",  self.cmb_constraints)
+        form.addRow("Numberer:",            self.cmb_numberer)
         form.addRow("Disp. increment (m):", self.sb_di)
         form.addRow("Target disp. (m):",    self.sb_tgt)
         form.addRow("Load incr. fraction:", self.sb_li)
@@ -1395,6 +1870,9 @@ class AnalysisTab(QWidget):
     def get_params(self):
         return {
             "analysis_type": self.cmb_type.currentText(),
+            "solver_system": self.cmb_system.currentText(),
+            "constraint_handler": self.cmb_constraints.currentText(),
+            "numberer": self.cmb_numberer.currentText(),
             "disp_incr":     self.sb_di.value(),
             "target_disp":   self.sb_tgt.value(),
             "load_incr":     self.sb_li.value(),
@@ -1410,9 +1888,12 @@ class AnalysisTab(QWidget):
 # =============================================================================
 class RunTab(QWidget):
     run_requested = pyqtSignal()
+    auto_detect_requested = pyqtSignal()
 
     def __init__(self):
         super().__init__()
+        self.backend_mode = "wsl"
+        self.python_cmd = "python3"
         outer = QVBoxLayout(self); outer.setContentsMargins(16, 16, 16, 16); outer.setSpacing(10)
         outer.addWidget(mk_lbl("Run Analysis  (GUI → OpenSeesPy Backend)", "heading"))
 
@@ -1420,17 +1901,22 @@ class RunTab(QWidget):
         wf = QFormLayout(grp_wsl); wf.setSpacing(6)
         self.wsl_activate = QLineEdit("source ~/ops_env/bin/activate")
         self.wsl_activate.setToolTip(
-            "WSL bash command to activate your Python environment with OpenSeesPy.\n"
+            "WSL activate command or direct Python command used to launch OpenSeesPy.\n"
             "Examples:\n"
             "  source ~/ops_env/bin/activate   (virtualenv)\n"
             "  conda activate opensees          (conda)\n"
-            "  true                             (system python with openseespy)")
-        wf.addRow("Activate cmd:", self.wsl_activate)
+            "  true                             (WSL system python with openseespy)\n"
+            "  C:/Python311/python.exe          (Windows python)")
+        self.lbl_detect = mk_lbl("Detection: not run yet.", "sub")
+        wf.addRow("Activate / Python cmd:", self.wsl_activate)
+        wf.addRow("Status:", self.lbl_detect)
         outer.addWidget(grp_wsl)
 
         brow = QHBoxLayout()
         self.btn_run   = QPushButton("▶  Run Analysis")
         self.btn_run.setObjectName("success"); self.btn_run.setMinimumHeight(40)
+        self.btn_auto_detect = QPushButton("Auto-Detect")
+        self.btn_auto_detect.setObjectName("flat")
         self.btn_validate_build = QPushButton("✓ Validate OpenSees Build")
         self.btn_validate_build.setObjectName("flat")
         self.btn_validate_build.setToolTip("Check if OpenSees has MultiSurfCrack2D and proper interface element support")
@@ -1438,7 +1924,7 @@ class RunTab(QWidget):
         self.btn_self_test.setObjectName("flat")
         self.btn_self_test.setToolTip("Run comprehensive test to PROVE MultiSurfCrack2D is actually being used (not silently falling back)")
         self.btn_clear = QPushButton("Clear Console"); self.btn_clear.setObjectName("flat")
-        brow.addWidget(self.btn_run); brow.addWidget(self.btn_validate_build); brow.addWidget(self.btn_self_test); brow.addWidget(self.btn_clear); brow.addStretch()
+        brow.addWidget(self.btn_run); brow.addWidget(self.btn_auto_detect); brow.addWidget(self.btn_validate_build); brow.addWidget(self.btn_self_test); brow.addWidget(self.btn_clear); brow.addStretch()
         outer.addLayout(brow)
 
         self.lbl_status = mk_lbl("Ready. Configure Geometry → Crack Materials → Analysis → Run.", "sub")
@@ -1451,6 +1937,7 @@ class RunTab(QWidget):
         outer.addWidget(grp_con, stretch=1)
 
         self.btn_run.clicked.connect(self.run_requested.emit)
+        self.btn_auto_detect.clicked.connect(self.auto_detect_requested.emit)
         self.btn_validate_build.clicked.connect(self._validate_build)
         self.btn_self_test.clicked.connect(self._run_self_test)
         self.btn_clear.clicked.connect(self.console.clear)
@@ -1519,7 +2006,27 @@ class RunTab(QWidget):
                 f"✗ COMPREHENSIVE INTEGRATION TEST FAILED\n\n{details}\n\n"
                 f"Check console for details and auto-fix attempts.")
 
+    def apply_backend_config(self, cfg):
+        self.backend_mode = cfg.get("backend_mode", "wsl")
+        self.python_cmd = cfg.get("python_cmd", self.python_cmd)
+        cmd = cfg.get("activate_cmd", "source ~/ops_env/bin/activate")
+        self.wsl_activate.setText(cmd)
+        self.set_detection_status(cfg.get("status_label", "Detection: not run yet."), ok=cfg.get("status_ok", True))
+
+    def get_backend_config(self):
+        return {
+            "backend_mode": self.backend_mode,
+            "activate_cmd": self.get_activate(),
+            "python_cmd": self.python_cmd,
+            "status_label": self.lbl_detect.text(),
+            "status_ok": "not found" not in self.lbl_detect.text().lower(),
+        }
+
     def get_activate(self): return self.wsl_activate.text().strip() or "true"
+
+    def set_detection_status(self, msg, ok=True):
+        self.lbl_detect.setText(msg)
+        self.lbl_detect.setStyleSheet(f"color:{C2 if ok else C3};font-weight:bold;")
 
     def append(self, msg):
         self.console.append(msg)
@@ -1528,6 +2035,54 @@ class RunTab(QWidget):
     def set_status(self, msg, ok=True):
         self.lbl_status.setStyleSheet(f"color:{C2 if ok else C3};font-weight:bold;")
         self.lbl_status.setText(msg)
+
+
+# =============================================================================
+# Crack Response Dialog
+# =============================================================================
+class CrackResponseDialog(QDialog):
+    def __init__(self, element_meta, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Crack Element {element_meta.get('element_index', '?')} Response")
+        self.resize(920, 560)
+        lay = QVBoxLayout(self)
+        title = mk_lbl(
+            f"Elem {element_meta.get('element_index', '?')}  |  x={element_meta.get('x', 0.0):.3f} m  y={element_meta.get('y', 0.0):.3f} m  |  {element_meta.get('mat_type', 'Unknown')}",
+            "sub"
+        )
+        lay.addWidget(title)
+
+        fig = Figure(facecolor=BG_DEEP, tight_layout=True)
+        ax1 = fig.add_subplot(121)
+        ax2 = fig.add_subplot(122)
+        for ax in (ax1, ax2):
+            ax.set_facecolor(BG_PANEL)
+            ax.tick_params(colors=TXTS, labelsize=9)
+            ax.xaxis.label.set_color(TXT); ax.yaxis.label.set_color(TXT)
+            ax.title.set_color(C1)
+            for s in ax.spines.values():
+                s.set_edgecolor(BORDER)
+            ax.grid(True, alpha=0.15, color=BORDER, linestyle="--")
+
+        slips = np.array(element_meta.get("slips", []), dtype=float)
+        shear = np.array(element_meta.get("shear_forces", []), dtype=float)
+        openings = np.array(element_meta.get("openings", []), dtype=float)
+        width0 = float(element_meta.get("width", 0.0))
+        crack_width = width0 + openings
+        normal_stress = np.array(element_meta.get("normal_stresses", []), dtype=float)
+
+        ax1.plot(slips, shear, color=C1, lw=1.8)
+        ax1.set_title("Shear Force vs Slip")
+        ax1.set_xlabel("Slip (m)")
+        ax1.set_ylabel("Shear force (kN)")
+
+        ax2.plot(crack_width, normal_stress, color=C3, lw=1.8)
+        ax2.set_title("Normal Stress vs Crack Width")
+        ax2.set_xlabel("Crack width (m)")
+        ax2.set_ylabel("Normal stress (MPa)")
+
+        canv = FigureCanvas(fig)
+        lay.addWidget(canv, stretch=1)
 
 
 # =============================================================================
@@ -1591,6 +2146,7 @@ class ResultsTab(QWidget):
         outer.addWidget(self.tb); outer.addWidget(self.canv, stretch=1)
 
         self._reset()
+        self.canv.mpl_connect("button_press_event", self._on_canvas_click)
         self.cmb_plot.currentTextChanged.connect(self._on_plot_mode_changed)
         self.cmb_crack.currentIndexChanged.connect(self.replot)
         self.sb_scale.valueChanged.connect(self.replot)
@@ -1626,12 +2182,14 @@ class ResultsTab(QWidget):
         self._node_disp_last = {}
         self._hand_strokes = []
         self._hand_ys      = []
+        self._element_responses = []
 
     def set_results(self, r):
         self._disp  = r["disp"]; self._force = r["force"]
         self._crack_pos = r.get("crack_positions", np.array([]))
         self._co    = r.get("crack_openings", [])
         self._cs    = r.get("crack_slips", [])
+        self._element_responses = list(r.get("element_responses", []))
         self._mesh_nodes     = r.get("mesh_nodes", {})
         self._mesh_tris      = r.get("mesh_tris", [])
         self._node_disp_last = r.get("node_disp_last", {})
@@ -1723,6 +2281,7 @@ class ResultsTab(QWidget):
         self.ax.set_title(f"Deformed Mesh  (scale ×{scale:.0f})")
         self.ax.text(0.02, 0.97, f"scale ×{scale:.0f}", transform=self.ax.transAxes,
                      va="top", color=TXTS, fontsize=9, family="monospace")
+        self._draw_clickable_crack_markers()
 
     def _plot_contour(self):
         if not self._mesh_nodes or not self._node_disp_last:
@@ -1747,6 +2306,7 @@ class ResultsTab(QWidget):
         self.ax.triplot(triang, color=BORDER, lw=0.3, alpha=0.4)
         self.ax.set_aspect("equal"); self.ax.set_xlabel("X (m)"); self.ax.set_ylabel("Y (m)")
         self.ax.set_title("Displacement Magnitude Contour")
+        self._draw_clickable_crack_markers()
 
     def _plot_crack_overlay(self):
         """Draw hand-drawn strokes over the undeformed mesh, styled by crack scalar."""
@@ -1829,6 +2389,40 @@ class ResultsTab(QWidget):
                      f"lw ∝ {metric.lower()} magnitude",
                      transform=self.ax.transAxes, va="top",
                      color=TXTS, fontsize=8, family="monospace")
+        self._draw_clickable_crack_markers()
+
+    def _draw_clickable_crack_markers(self):
+        if not self._element_responses:
+            return
+        xs = [float(meta.get("x", 0.0)) for meta in self._element_responses]
+        ys = [float(meta.get("y", 0.0)) for meta in self._element_responses]
+        self.ax.scatter(xs, ys, s=28, facecolors='none', edgecolors="#ffd54f",
+                        linewidths=1.2, zorder=6)
+        self.ax.text(0.02, 0.03, "Click a crack element marker to open its response history.",
+                     transform=self.ax.transAxes, color=TXTS, fontsize=8, family="monospace")
+
+    def _on_canvas_click(self, event):
+        mode = self.cmb_plot.currentText()
+        if mode not in ("Deformed Mesh", "Displacement Magnitude Contour", "Crack Behavior Overlay"):
+            return
+        if event.inaxes != self.ax or event.xdata is None or event.ydata is None or not self._element_responses:
+            return
+        xs = [float(meta.get("x", 0.0)) for meta in self._element_responses]
+        ys = [float(meta.get("y", 0.0)) for meta in self._element_responses]
+        bounds_x = max(xs) - min(xs) if len(xs) > 1 else 1.0
+        bounds_y = max(ys) - min(ys) if len(ys) > 1 else 1.0
+        tol = 0.04 * max(bounds_x, bounds_y, 1.0)
+        best_idx = None
+        best_dist = tol
+        for idx, (xv, yv) in enumerate(zip(xs, ys)):
+            dist = math.hypot(event.xdata - xv, event.ydata - yv)
+            if dist <= best_dist:
+                best_idx = idx
+                best_dist = dist
+        if best_idx is None:
+            return
+        dlg = CrackResponseDialog(self._element_responses[best_idx], self)
+        dlg.exec_()
 
     def _save(self):
         p, _ = QFileDialog.getSaveFileName(self, "Save", "result.png", "PNG (*.png);;PDF (*.pdf)")
@@ -2136,13 +2730,18 @@ def _create_eppgap_macro(ops, ci, nb, na, kn, kt, gap, eta, elt_base):
     elt_ids = []
 
     # --- 4 tangential (shear) springs with staggered gaps ---
+    spring_shares = [0.15, 0.20, 0.25, 0.40]
+    gap_mults = [0.35, 0.75, 1.25, 1.80]
+    yield_mults = [0.20, 0.45, 0.90, 1.50]
+    base_gap = max(float(gap), 1e-6)
     for k in range(4):
         tag_t = base_mat + k
-        frac_kt = kt / 4.0
-        gap_k = gap * (1.0 + 0.25 * k)  # stagger gaps
+        frac_kt = kt * spring_shares[k]
+        gap_k = base_gap * gap_mults[k]
+        fy_k = max(frac_kt * base_gap * yield_mults[k], 1e-8)
         try:
             ops.uniaxialMaterial('ElasticPPGap', tag_t,
-                                 frac_kt, frac_kt * 5.0, gap_k, eta)
+                                 frac_kt, fy_k, gap_k, eta)
         except Exception:
             ops.uniaxialMaterial('Elastic', tag_t, frac_kt)
         eid = elt_base + ci * 5 + k
@@ -2151,14 +2750,86 @@ def _create_eppgap_macro(ops, ci, nb, na, kn, kt, gap, eta, elt_base):
 
     # --- 1 normal spring ---
     tag_n = base_mat + 4
-    try:
-        ops.uniaxialMaterial('ElasticPPGap', tag_n, kn, kn * 10.0, 0.0, eta)
-    except Exception:
-        ops.uniaxialMaterial('Elastic', tag_n, kn)
+    ops.uniaxialMaterial('Elastic', tag_n, kn)
     eid_n = elt_base + ci * 5 + 4
     ops.element('zeroLength', eid_n, nb, na, '-mat', tag_n, '-dir', 2)
     elt_ids.append(eid_n)
     return elt_ids
+
+
+def _elastic_pp_gap_force(k, fy, gap, eta, disp):
+    sign = 1.0 if disp >= 0.0 else -1.0
+    abs_d = abs(float(disp))
+    gap = max(float(gap), 0.0)
+    if abs_d <= gap:
+        return 0.0
+    rel = abs_d - gap
+    k = max(float(k), 1e-12)
+    fy = max(float(fy), 1e-12)
+    yield_disp = fy / k
+    if rel <= yield_disp:
+        return sign * k * rel
+    return sign * (fy + float(eta) * k * (rel - yield_disp))
+
+
+def _bilinear_force(k, uy, eta, disp):
+    sign = 1.0 if disp >= 0.0 else -1.0
+    abs_d = abs(float(disp))
+    uy = max(float(uy), 1e-12)
+    fy = float(k) * uy
+    if abs_d <= uy:
+        return float(k) * disp
+    return sign * (fy + float(eta) * float(k) * (abs_d - uy))
+
+
+def _eval_shear_force(mat_type, kt, gap, eta, slip):
+    lower = str(mat_type).lower()
+    if 'macro' in lower:
+        spring_shares = [0.15, 0.20, 0.25, 0.40]
+        gap_mults = [0.35, 0.75, 1.25, 1.80]
+        yield_mults = [0.20, 0.45, 0.90, 1.50]
+        base_gap = max(float(gap), 1e-6)
+        total = 0.0
+        for share, gap_mult, yield_mult in zip(spring_shares, gap_mults, yield_mults):
+            k_i = float(kt) * share
+            fy_i = max(k_i * base_gap * yield_mult, 1e-8)
+            total += _elastic_pp_gap_force(k_i, fy_i, base_gap * gap_mult, eta, slip)
+        return total
+    if 'eppgap' in lower:
+        fy = max(float(kt) * max(float(gap), 1e-6), 1e-8)
+        return _elastic_pp_gap_force(kt, fy, gap, eta, slip)
+    if 'bilinear' in lower or 'custom' in lower:
+        return _bilinear_force(kt, max(gap, 1e-6), eta, slip)
+    return float(kt) * float(slip)
+
+
+def _eval_normal_force(mat_type, kn, gap, eta, opening):
+    lower = str(mat_type).lower()
+    if 'bilinear' in lower or 'custom' in lower:
+        return _bilinear_force(kn, max(gap, 1e-6), eta, opening)
+    return float(kn) * float(opening)
+
+
+def _compute_tributary_lengths(crack_pairs, panel_W):
+    by_y = {}
+    for cp in crack_pairs:
+        by_y.setdefault(round(float(cp[2]), 8), []).append(cp)
+    tributary = {}
+    for _, cps in by_y.items():
+        cps = sorted(cps, key=lambda cp: float(cp[3]))
+        if len(cps) == 1:
+            tributary[(int(cps[0][0]), int(cps[0][1]))] = float(panel_W)
+            continue
+        xs = [float(cp[3]) for cp in cps]
+        for idx, cp in enumerate(cps):
+            if idx == 0:
+                trib = 0.5 * (xs[1] - xs[0])
+            elif idx == len(cps) - 1:
+                trib = 0.5 * (xs[-1] - xs[-2])
+            else:
+                trib = 0.5 * (xs[idx + 1] - xs[idx - 1])
+            tributary[(int(cp[0]), int(cp[1]))] = max(trib, 1e-9)
+    return tributary
 
 
 # ── (B) Model sanity checks ─────────────────────────────────────────────────
@@ -2323,7 +2994,10 @@ def _build_analysis(ops, p, at, ln, dof, incr, alg,
         ops.constraints(constr_type)
     except Exception:
         ops.constraints('Transformation')
-    ops.numberer('RCM')
+    try:
+        ops.numberer(p.get('numberer', 'RCM'))
+    except Exception:
+        ops.numberer('RCM')
     try:
         ops.system(sys_type)
     except Exception:
@@ -2353,9 +3027,13 @@ def _step_with_recovery(ops, p, at, ln, dof, incr, step_num=0):
     base_tol = float(p.get('tol', 1e-8))
     base_iter = int(p.get('max_iter', 400))
 
-    constraints_list = ['Plain', 'Transformation']
-    systems_list = ['UmfPack', 'BandGeneral']
-    algorithms_list = ['NewtonLineSearch', 'ModifiedNewton', 'KrylovNewton', 'Newton']
+    pref_constr = p.get('constraint_handler', 'Plain')
+    pref_sys = p.get('solver_system', 'UmfPack')
+    pref_alg = p.get('algorithm', 'NewtonLineSearch')
+
+    constraints_list = list(dict.fromkeys([pref_constr, 'Plain', 'Transformation', 'Lagrange']))
+    systems_list = list(dict.fromkeys([pref_sys, 'UmfPack', 'BandGeneral', 'ProfileSPD']))
+    algorithms_list = list(dict.fromkeys([pref_alg, 'NewtonLineSearch', 'ModifiedNewton', 'KrylovNewton', 'Newton']))
     # Relaxed test configs: (test_type, tol_multiplier, iter_multiplier)
     test_configs = [
         ('NormDispIncr', 1.0, 1.0),
@@ -2505,18 +3183,35 @@ def run_model_2d(p):
             _log("[MATERIAL USE] MultiSurfCrack2D not available in this build")
             _log("[MATERIAL USE] → Using EPPGap macro-element for requested MultiSurfCrack2D links")
 
-        def _find_mat(y_val):
+        def _find_mat(cp, idx):
+            default = {
+                'mat_type': 'Elastic', 'kn': 210., 'kt': 5.95, 'gap': 0.001, 'eta': 0.02,
+                'width': 0.001, 'orientation_deg': 0.0,
+                'below_node': int(cp[0]), 'above_node': int(cp[1]),
+                'x': float(cp[3]), 'y': float(cp[2]),
+            }
             if not crack_mat_data:
-                return {'mat_type': 'Elastic', 'kn': 210., 'kt': 5.95, 'gap': 0.001, 'eta': 0.02}
-            closest = min(crack_mat_data, key=lambda cm: abs(float(cm['y']) - y_val))
-            if abs(float(closest['y']) - y_val) < 5e-3:
-                return closest
-            return {'mat_type': 'Elastic', 'kn': 210., 'kt': 5.95, 'gap': 0.001, 'eta': 0.02}
+                return default
+            for cm in crack_mat_data:
+                if (int(cm.get('below_node', -1)) == int(cp[0]) and
+                        int(cm.get('above_node', -1)) == int(cp[1])):
+                    merged = dict(default)
+                    merged.update(cm)
+                    return merged
+            if idx < len(crack_mat_data):
+                merged = dict(default)
+                merged.update(crack_mat_data[idx])
+                return merged
+            closest = min(crack_mat_data, key=lambda cm: abs(float(cm.get('y', 0.0)) - float(cp[2])))
+            merged = dict(default)
+            merged.update(closest)
+            return merged
 
         elt_base = len(mesh_tris) + 1
         # Reserve space: fallback macro uses up to 5 elts per crack
         elt_base_macro = elt_base + len(crack_pairs) + 100
-        cnodes = []
+        tributary_lengths = _compute_tributary_lengths(crack_pairs, W)
+        pair_meta = []
 
         crack_y_set = sorted(set(float(cp[2]) for cp in crack_pairs))
         cpos = crack_y_set
@@ -2533,9 +3228,9 @@ def run_model_2d(p):
                 c_tx, c_ty = 1.0, 0.0
                 c_nx, c_ny = 0.0, 1.0
 
-            cm = _find_mat(yc)
+            cm = _find_mat(cp, ci)
             if ci < 5:
-                matched_y = min(crack_mat_data, key=lambda c: abs(float(c['y']) - yc))['y'] if crack_mat_data else 'N/A'
+                matched_y = cm.get('y', 'N/A')
                 _log(f"[DEBUG] crack {ci} yc={yc} matched_y={matched_y}")
             mat_type = str(cm.get('mat_type', 'MultiSurfCrack2D'))
             mat_id = 10000 + ci
@@ -2543,8 +3238,12 @@ def run_model_2d(p):
             kt = max(float(cm.get('kt', 5.95)), 1e-6)
             gap = float(cm.get('gap', 0.001))
             eta = float(cm.get('eta', 0.02))
+            width = float(cm.get('width', gap))
+            orientation_deg = float(cm.get('orientation_deg', math.degrees(math.atan2(c_ty, c_tx))))
+            c_tx, c_ty, c_nx, c_ny = math.cos(math.radians(orientation_deg)), math.sin(math.radians(orientation_deg)), -math.sin(math.radians(orientation_deg)), math.cos(math.radians(orientation_deg))
 
             use_mscrack = ('multisurfcrack2d' in mat_type.lower() or 'multi' in mat_type.lower())
+            use_macro = 'macro' in mat_type.lower()
 
             if use_mscrack:
                 if mscrack_available and mscrack_2d_usable:
@@ -2560,15 +3259,23 @@ def run_model_2d(p):
                         elt_id = elt_base + ci
                         ops.element('zeroLengthND', elt_id, nb, na, mat_id)
                         n_mscrack_ok += 1
-                        cnodes.append((nb, na, yc, c_tx, c_ty, c_nx, c_ny))
+                        pair_meta.append(dict(
+                            element_index=ci + 1, below_node=nb, above_node=na,
+                            x=float(cp[3]), y=yc, width=width, orientation_deg=orientation_deg,
+                            mat_type=mat_type, kn=kn, kt=kt, gap=gap, eta=eta,
+                            tx=c_tx, ty=c_ty, nx=c_nx, ny=c_ny,
+                            tributary_length=tributary_lengths.get((nb, na), 1e-9),
+                            area=max(tributary_lengths.get((nb, na), 1e-9) * t, 1e-9),
+                            openings=[], slips=[], shear_forces=[], normal_stresses=[],
+                        ))
                         continue
                     except Exception as e_ms:
                         _log(f"[FALLBACK REASON] crack={ci} y={yc:.6f} MultiSurfCrack2D link failed: {e_ms}")
 
                 _create_eppgap_macro(ops, ci, nb, na, kn, kt, gap, eta, elt_base_macro)
                 n_fallback += 1
-                cnodes.append((nb, na, yc, c_tx, c_ty, c_nx, c_ny))
-
+            elif use_macro:
+                _create_eppgap_macro(ops, ci, nb, na, kn, kt, gap, eta, elt_base_macro)
             else:
                 # Standard materials (Elastic, ElasticPPGap, Steel01)
                 mat_t = mat_id * 2
@@ -2586,7 +3293,16 @@ def run_model_2d(p):
 
                 elt_id = elt_base + ci
                 ops.element('zeroLength', elt_id, nb, na, '-mat', mat_t, mat_n, '-dir', 1, 2)
-                cnodes.append((nb, na, yc, c_tx, c_ty, c_nx, c_ny))
+
+            pair_meta.append(dict(
+                element_index=ci + 1, below_node=nb, above_node=na,
+                x=float(cp[3]), y=yc, width=width, orientation_deg=orientation_deg,
+                mat_type=mat_type, kn=kn, kt=kt, gap=gap, eta=eta,
+                tx=c_tx, ty=c_ty, nx=c_nx, ny=c_ny,
+                tributary_length=tributary_lengths.get((nb, na), 1e-9),
+                area=max(tributary_lengths.get((nb, na), 1e-9) * t, 1e-9),
+                openings=[], slips=[], shear_forces=[], normal_stresses=[],
+            ))
 
         _log(f"[INSTRUMENTATION] Crack creation complete. "
              f"MultiSurfCrack2D={n_mscrack_ok}, EPPGap_fallback={n_fallback}, "
@@ -2641,7 +3357,8 @@ def run_model_2d(p):
         open_l = [[] for _ in range(nc_y)]
         slip_l = [[] for _ in range(nc_y)]
 
-        active_sys = 'UmfPack'; active_constr = 'Plain'
+        active_sys = p.get('solver_system', 'UmfPack')
+        active_constr = p.get('constraint_handler', 'Plain')
 
         def collect():
             disp_l.append(ops.nodeDisp(ref_nid, ref_dof))
@@ -2653,13 +3370,22 @@ def run_model_2d(p):
             force_l.append(tot_f)
             for yi, yv in enumerate(crack_y_set):
                 dw_sum = ds_sum = cnt = 0
-                for nb, na, yc, c_tx, c_ty, c_nx, c_ny in cnodes:
-                    if abs(yc - yv) < 1e-6:
+                for meta in pair_meta:
+                    if abs(meta['y'] - yv) < 1e-6:
                         try:
-                            dux = ops.nodeDisp(na, 1) - ops.nodeDisp(nb, 1)
-                            duy = ops.nodeDisp(na, 2) - ops.nodeDisp(nb, 2)
-                            dw_sum += dux * c_nx + duy * c_ny
-                            ds_sum += dux * c_tx + duy * c_ty
+                            dux = ops.nodeDisp(meta['above_node'], 1) - ops.nodeDisp(meta['below_node'], 1)
+                            duy = ops.nodeDisp(meta['above_node'], 2) - ops.nodeDisp(meta['below_node'], 2)
+                            opening = dux * meta['nx'] + duy * meta['ny']
+                            slip = dux * meta['tx'] + duy * meta['ty']
+                            shear_force = _eval_shear_force(meta['mat_type'], meta['kt'], meta['gap'], meta['eta'], slip)
+                            normal_force = _eval_normal_force(meta['mat_type'], meta['kn'], meta['gap'], meta['eta'], opening)
+                            normal_stress = normal_force / max(meta['area'], 1e-9) / 1000.0
+                            meta['openings'].append(opening)
+                            meta['slips'].append(slip)
+                            meta['shear_forces'].append(shear_force)
+                            meta['normal_stresses'].append(normal_stress)
+                            dw_sum += opening
+                            ds_sum += slip
                             cnt += 1
                         except: pass
                 open_l[yi].append(dw_sum / max(cnt, 1))
@@ -2759,6 +3485,7 @@ def run_model_2d(p):
         disp=a(disp_l), force=a(force_l),
         crack_positions=a(cpos),
         crack_openings=la(open_l), crack_slips=la(slip_l),
+        element_responses=pair_meta,
         node_disp_last_ids=nids_arr, node_disp_last_vals=disp_arr,
         status=status, message=msg,
         log=list(_LOG_LINES),
@@ -2800,6 +3527,7 @@ def main():
             crack_positions=r['crack_positions'],
             crack_openings=np.array(r['crack_openings'], dtype=object),
             crack_slips=np.array(r['crack_slips'], dtype=object),
+            element_responses=np.array(r['element_responses'], dtype=object),
             node_disp_last_ids=nids, node_disp_last_vals=nvals,
             status=np.array([r['status']]),
             message=np.array([r['message']]))
@@ -2823,12 +3551,14 @@ class WSLWorker(QThread):
     finished = pyqtSignal(dict)
     error    = pyqtSignal(str)
 
-    def __init__(self, params, run_dir, activate, is_windows):
+    def __init__(self, params, run_dir, activate, is_windows, backend_mode="wsl", python_cmd="python3"):
         super().__init__()
         self.params   = params
         self.run_dir  = Path(run_dir)
         self.activate = activate
         self.is_windows = bool(is_windows)
+        self.backend_mode = backend_mode
+        self.python_cmd = python_cmd or "python3"
 
     def run(self):
         try:
@@ -2840,7 +3570,10 @@ class WSLWorker(QThread):
             pp.write_text(json.dumps(self.params, indent=2), encoding='utf-8')
             rp.write_text(RUNNER_PY.lstrip(), encoding='utf-8')
 
-            if self.is_windows:
+            if self.backend_mode == "windows":
+                cmd = [self.python_cmd, str(rp), str(pp), str(np_)]
+                bash = " ".join(shlex.quote(part) for part in cmd)
+            elif self.is_windows:
                 pp_w  = win_to_wsl(str(pp))
                 rp_w  = win_to_wsl(str(rp))
                 np_w  = win_to_wsl(str(np_))
@@ -2924,6 +3657,7 @@ class WSLWorker(QThread):
                 crack_positions=arr("crack_positions"),
                 crack_openings=obj("crack_openings"),
                 crack_slips=obj("crack_slips"),
+                element_responses=list(data["element_responses"]) if "element_responses" in data else [],
                 node_disp_last=node_disp_last,
                 mesh_nodes=mesh_nodes,
                 mesh_tris=mesh_tris,
@@ -3012,6 +3746,7 @@ class MainWindow(QMainWindow):
         self.run  = RunTab()
         self.res  = ResultsTab()
         self.scr  = ScriptTab()
+        self._load_backend_config()
 
         for name, tab in [
             ("① Geometry",        self.geo),
@@ -3032,6 +3767,7 @@ class MainWindow(QMainWindow):
 
         # ── wire signals ──────────────────────────────────────────────────────
         self.run.run_requested.connect(self.start_analysis)
+        self.run.auto_detect_requested.connect(self.auto_detect_backend)
         self.btn_run.clicked.connect(self.start_analysis)
         self.btn_refresh_cracks.clicked.connect(self._refresh_cracks)
         self.btn_gen_script.clicked.connect(self.generate_script)
@@ -3053,9 +3789,164 @@ class MainWindow(QMainWindow):
         p.update(self.anl.get_params())
         return p
 
+    def _default_backend_config(self):
+        return {
+            "backend_mode": "wsl" if self._is_windows else "local",
+            "activate_cmd": "source ~/ops_env/bin/activate",
+            "python_cmd": sys.executable,
+            "status_label": "Detection: not run yet.",
+            "status_ok": True,
+        }
+
+    def _load_backend_config(self):
+        cfg = self._default_backend_config()
+        try:
+            if APP_CONFIG_FILE.exists():
+                loaded = json.loads(APP_CONFIG_FILE.read_text(encoding="utf-8"))
+                cfg.update(loaded)
+        except Exception:
+            pass
+        self.run.apply_backend_config(cfg)
+
+    def _save_backend_config(self):
+        try:
+            APP_CONFIG_FILE.write_text(json.dumps(self.run.get_backend_config(), indent=2), encoding="utf-8")
+        except Exception as exc:
+            self.run.append(f"[CONFIG WARN] Could not save {APP_CONFIG_FILE.name}: {exc}")
+
+    def _probe_wsl_activate(self, activate_cmd):
+        cmd = ["wsl", "bash", "-lc",
+               f"{activate_cmd} && python3 -c \"import openseespy.opensees as ops, sys; print(sys.executable)\""]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=25)
+        exe = proc.stdout.strip().splitlines()[-1] if proc.returncode == 0 and proc.stdout.strip() else ""
+        return proc.returncode == 0 and bool(exe), exe
+
+    def _probe_wsl_python(self, python_cmd):
+        cmd = ["wsl", "bash", "-lc",
+               f"{python_cmd} -c \"import openseespy.opensees as ops, sys; print(sys.executable)\""]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=25)
+        exe = proc.stdout.strip().splitlines()[-1] if proc.returncode == 0 and proc.stdout.strip() else ""
+        return proc.returncode == 0 and bool(exe), exe
+
+    def _probe_windows_python(self, python_cmd):
+        proc = subprocess.run(
+            [python_cmd, "-c", "import openseespy.opensees as ops, sys; print(sys.executable)"],
+            capture_output=True, text=True, timeout=25
+        )
+        exe = proc.stdout.strip().splitlines()[-1] if proc.returncode == 0 and proc.stdout.strip() else ""
+        return proc.returncode == 0 and bool(exe), exe
+
+    def auto_detect_backend(self):
+        self.run.append("[AUTO-DETECT] Searching for OpenSeesPy backend...")
+        workspace = Path(__file__).resolve().parent
+
+        if self._is_windows:
+            wsl_venv_paths = [
+                f"source {win_to_wsl(str(workspace / '.venv'))}/bin/activate",
+                "source ~/ops_env/bin/activate",
+                "source ~/.venv/bin/activate",
+                "source ~/venv/bin/activate",
+                "source ~/opensees-env/bin/activate",
+            ]
+            for act in wsl_venv_paths:
+                try:
+                    ok, exe = self._probe_wsl_activate(act)
+                except Exception:
+                    ok, exe = False, ""
+                if ok:
+                    self.run.backend_mode = "wsl"
+                    self.run.python_cmd = "python3"
+                    self.run.wsl_activate.setText(act)
+                    msg = f"Detected WSL virtualenv: {exe}"
+                    self.run.set_detection_status(msg, ok=True)
+                    self.run.append(f"[AUTO-DETECT] {msg}")
+                    self._save_backend_config()
+                    self.check_wsl()
+                    return
+
+            conda_setup = [
+                "~/miniconda3/etc/profile.d/conda.sh",
+                "~/anaconda3/etc/profile.d/conda.sh",
+                "~/mambaforge/etc/profile.d/conda.sh",
+            ]
+            env_names = []
+            for setup in conda_setup:
+                try:
+                    proc = subprocess.run(
+                        ["wsl", "bash", "-lc", f"source {setup} >/dev/null 2>&1; conda env list --json"],
+                        capture_output=True, text=True, timeout=25
+                    )
+                    if proc.returncode == 0 and proc.stdout.strip():
+                        envs = json.loads(proc.stdout).get("envs", [])
+                        env_names = [Path(env).name for env in envs if env]
+                        if env_names:
+                            for env_name in env_names:
+                                act = f"source {setup} && conda activate {env_name}"
+                                try:
+                                    ok, exe = self._probe_wsl_activate(act)
+                                except Exception:
+                                    ok, exe = False, ""
+                                if ok:
+                                    self.run.backend_mode = "wsl"
+                                    self.run.python_cmd = "python3"
+                                    self.run.wsl_activate.setText(act)
+                                    msg = f"Detected WSL conda env '{env_name}': {exe}"
+                                    self.run.set_detection_status(msg, ok=True)
+                                    self.run.append(f"[AUTO-DETECT] {msg}")
+                                    self._save_backend_config()
+                                    self.check_wsl()
+                                    return
+                except Exception:
+                    continue
+
+            try:
+                ok, exe = self._probe_wsl_python("python3")
+            except Exception:
+                ok, exe = False, ""
+            if ok:
+                self.run.backend_mode = "wsl"
+                self.run.python_cmd = "python3"
+                self.run.wsl_activate.setText("true")
+                msg = f"Detected WSL system python: {exe}"
+                self.run.set_detection_status(msg, ok=True)
+                self.run.append(f"[AUTO-DETECT] {msg}")
+                self._save_backend_config()
+                self.check_wsl()
+                return
+
+            windows_candidates = [
+                workspace / ".venv" / "Scripts" / "python.exe",
+                Path(sys.executable),
+                Path("python.exe"),
+            ]
+            for candidate in windows_candidates:
+                try:
+                    ok, exe = self._probe_windows_python(str(candidate))
+                except Exception:
+                    ok, exe = False, ""
+                if ok:
+                    self.run.backend_mode = "windows"
+                    self.run.python_cmd = exe or str(candidate)
+                    self.run.wsl_activate.setText(exe or str(candidate))
+                    msg = f"Detected Windows python: {exe or candidate}"
+                    self.run.set_detection_status(msg, ok=True)
+                    self.run.append(f"[AUTO-DETECT] {msg}")
+                    self._save_backend_config()
+                    self.check_wsl()
+                    return
+
+        msg = "Detection: OpenSeesPy not found in WSL virtualenv, WSL conda, WSL python3, or Windows python."
+        self.run.set_detection_status(msg, ok=False)
+        self.run.append(f"[AUTO-DETECT] {msg}")
+        self._save_backend_config()
+
     def check_wsl(self):
         act = self.run.get_activate()
-        if self._is_windows:
+        mode = self.run.backend_mode
+        if mode == "windows":
+            cmd = [self.run.python_cmd, "-c", "import openseespy.opensees; print('OK')"]
+            backend_name = "Windows"
+        elif self._is_windows:
             cmd = ["wsl", "bash", "-lc",
                    f"{act} && python3 -c \"import openseespy.opensees; print('OK')\""]
             backend_name = "WSL"
@@ -3069,6 +3960,7 @@ class MainWindow(QMainWindow):
             self.lbl_wsl.setText(f"{backend_name}: {'✓ OK' if ok else '✗ NOT READY'}")
             self.lbl_wsl.setStyleSheet(
                 f"color:{C2 if ok else C3};font-size:12px;font-weight:bold;")
+            self.run.set_detection_status(f"{backend_name} backend: {'ready' if ok else 'not ready'}", ok=ok)
             self.run.append(f"✓ {backend_name} OpenSeesPy ready." if ok else
                             f"✗ {backend_name} check failed — fix 'Activate command' in Run tab.")
             if not ok and proc.stderr.strip():
@@ -3099,6 +3991,7 @@ class MainWindow(QMainWindow):
         ts  = time.strftime("%Y%m%d_%H%M%S")
         rd  = Path(self.RUNS_DIR) / f"run_{ts}"
         act = self.run.get_activate()
+        self._save_backend_config()
 
         nn  = len(p.get("mesh_nodes", {}))
         nt  = len(p.get("mesh_tris",  []))
@@ -3123,7 +4016,11 @@ class MainWindow(QMainWindow):
         self.lbl_workflow.setStyleSheet(f"color:{C4};font-size:10px;")
         self.statusBar().showMessage(f"Analysis running in {backend_name}…")
 
-        self._worker = WSLWorker(p, str(rd), act, self._is_windows)
+        self._worker = WSLWorker(
+            p, str(rd), act, self._is_windows,
+            backend_mode=self.run.backend_mode,
+            python_cmd=self.run.python_cmd,
+        )
         self._worker.log.connect(self.run.append)
         self._worker.finished.connect(self._on_done)
         self._worker.error.connect(self._on_err)
