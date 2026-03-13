@@ -300,31 +300,6 @@ This is the primary file containing everything:
 - The full `RUNNER_PY` constant is appended after the header
 - The result is a **completely self-contained Python file** that can run without the GUI
 
-#### `opensees_model1.py` — 1D Rebar-with-Cracks Model (194 lines)
-
-**Concept:** A simpler 1D predecessor script that models a vertical rebar with crack interfaces.
-
-**How it works:**
-- Creates a 1D column of truss elements along the Y-axis
-- At each crack Y-position, duplicates the node (below/above) and inserts a zero-length crack element
-- Rebar material options: `Elastic`, `ElasticPP` (elastic perfectly-plastic), `Steel02` (Giuffré-Menegotto-Pinto cyclic steel)
-- Crack elements use simple `Elastic` springs for kn (normal) and kt (shear)
-- Runs either LoadControl or DisplacementControl analysis
-- Collects force-displacement curve and crack opening histories
-- Saves results to `results.npz`
-- Can be executed standalone: `python opensees_model1.py params.json results.npz`
-
-**This script served as the prototype** for the more sophisticated 2D runner. The concepts of node duplication at cracks, zero-length interface elements, and the analysis/output collection pattern were first developed here and then extended to 2D.
-
-#### `model.py` — Minimal OpenSeesPy Sanity Check (16 lines)
-
-**Concept:** The simplest possible OpenSeesPy model — verifies that OpenSeesPy is correctly installed.
-
-**What it does:**
-- Creates 2 nodes and 1 elastic truss element
-- Prints the OpenSeesPy version if successful
-- Used to quickly test whether the WSL environment is working
-
 ### 5.3 The Scripting Concept — Design Philosophy
 
 The project follows a **layered scripting architecture**:
@@ -337,15 +312,14 @@ Layer 2:  RUNNER_PY            ← Embedded FEM solver script
           (runner.py on disk)     Pure computation, no GUI dependency
               │                    Reads params.json → produces results.npz
               │
-Layer 1:  opensees_model1.py   ← Prototype 1D model
-          model.py                Development/testing scripts
+Layer 1:  historical prototypes (removed from current repo)
 ```
 
 **Why this design:**
 1. **Separation of concerns:** The GUI handles user interaction; the runner handles computation. They communicate through JSON (in) and NPZ (out).
 2. **Portability:** The exported script (from Tab 6) runs anywhere OpenSeesPy is installed — no PyQt5, no Windows, no WSL needed. This means users can run analyses on HPC clusters or share scripts with collaborators.
 3. **Reproducibility:** Every run saves its `params.json` and `runner.py` in a timestamped folder, so any analysis can be exactly reproduced later.
-4. **Incremental development:** The project evolved from `model.py` (basic test) → `opensees_model1.py` (1D prototype) → `RUNNER_PY` (full 2D solver) → `gui_wsl.py` (complete GUI wrapping everything).
+4. **Incremental development:** The project evolved through early prototype scripts into `RUNNER_PY` (full 2D solver) and `gui_wsl.py` (complete GUI wrapping everything).
 
 ---
 
