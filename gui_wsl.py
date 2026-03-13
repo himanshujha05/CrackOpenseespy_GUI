@@ -25,7 +25,7 @@ from PyQt5.QtWidgets import (
     QGroupBox, QDoubleSpinBox, QSpinBox, QFileDialog,
     QMessageBox, QCheckBox, QSplitter, QScrollArea,
     QFrame, QSlider, QAbstractItemView, QDialog, QAbstractSpinBox,
-    QSizePolicy,
+    QSizePolicy, QAction, QMenu, QRadioButton,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt5.QtGui import (
@@ -120,6 +120,7 @@ QFormLayout QLabel{{color:{TXT};font-size:13px;}}
 """
 
 APP_CONFIG_FILE = Path(__file__).with_name("panel_gui_config.json")
+PROJECT_FILE_VERSION = "1.0"
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
 def win_to_wsl(p):
@@ -193,9 +194,74 @@ def point_to_polyline_distance(px, py, pts):
         for i in range(len(pts) - 1)
     )
 
+def stroke_angle_deg(stroke, default_deg=0.0):
+    if not stroke or len(stroke) < 2:
+        return float(default_deg)
+    x0, y0 = stroke[0]
+    x1, y1 = stroke[-1]
+    if abs(x1 - x0) < 1e-12 and abs(y1 - y0) < 1e-12:
+        return float(default_deg)
+    return math.degrees(math.atan2(y1 - y0, x1 - x0))
+
+def compute_mesh_divisions(W, H, max_elem_size, max_aspect):
+    W = max(float(W), 1e-9)
+    H = max(float(H), 1e-9)
+    max_elem_size = max(float(max_elem_size), 1e-6)
+    max_aspect = max(float(max_aspect), 1.0)
+    nx = max(1, math.ceil(W / max_elem_size))
+    ny = max(1, math.ceil(H / max_elem_size))
+    for _ in range(8):
+        dx = W / max(nx, 1)
+        dy = H / max(ny, 1)
+        ratio_xy = dx / max(dy, 1e-12)
+        ratio_yx = dy / max(dx, 1e-12)
+        changed = False
+        if ratio_xy > max_aspect:
+            ny = max(ny, math.ceil(ny * ratio_xy / max_aspect))
+            changed = True
+        if ratio_yx > max_aspect:
+            nx = max(nx, math.ceil(nx * ratio_yx / max_aspect))
+            changed = True
+        if not changed:
+            break
+    return nx, ny
+
+def mesh_preview_text(W, H, nx, ny):
+    dx = float(W) / max(int(nx), 1)
+    dy = float(H) / max(int(ny), 1)
+    aspect = max(dx / max(dy, 1e-12), dy / max(dx, 1e-12))
+    return (f"Preview: {int(nx)} x {int(ny)} cells  =  {2 * int(nx) * int(ny)} triangles"
+            f"   |   dx={dx:.3f} m, dy={dy:.3f} m, aspect={aspect:.2f}")
+
+def snap_crack_specs(crack_specs, H, enable_edge_snap=True, edge_snap_threshold=0.15):
+    H = max(float(H), 1e-9)
+    snapped = []
+    messages = []
+    for spec in crack_specs or []:
+        item = dict(spec)
+        y_in = float(item.get("y", 0.0))
+        y_out = min(max(y_in, 0.0), H)
+        snapped_edge = False
+        if enable_edge_snap:
+            frac = y_out / H
+            if frac < float(edge_snap_threshold):
+                y_out = 0.0
+                snapped_edge = True
+            elif frac > (1.0 - float(edge_snap_threshold)):
+                y_out = H
+                snapped_edge = True
+        item["y"] = round(y_out, 8)
+        item["snapped_to_edge"] = snapped_edge
+        if snapped_edge:
+            edge_name = "bottom" if y_out <= 0.0 else "top"
+            messages.append(f"Crack at y={y_in:.3f} snapped to {edge_name} edge")
+        snapped.append(item)
+    return snapped, messages
+
 
 # ─── Mesh generation ──────────────────────────────────────────────────────────
-def generate_panel_mesh(W, H, nx, ny, crack_ys):
+def generate_panel_mesh(W, H, nx, ny, crack_ys=None, crack_specs=None,
+                       enable_edge_snap=True, edge_snap_threshold=0.15):
     """
     Structured triangular mesh for a W×H panel.
     Crack rows duplicate nodes so zeroLength interface elements can be inserted.
@@ -204,18 +270,34 @@ def generate_panel_mesh(W, H, nx, ny, crack_ys):
     -------
     nodes      : {nid: (x, y)}
     tris       : [(eid, n1, n2, n3)]
-    crack_pairs: [(nid_below, nid_above, y, x)]
+    crack_pairs: [(nid_below, nid_above, y, x, tx, ty, nx, ny)]
     crack_rows : set of j-indices that are crack rows
     """
+    crack_specs = list(crack_specs or [])
+    if not crack_specs:
+        crack_specs = [{"y": float(yc), "angle_deg": 0.0} for yc in (crack_ys or [])]
+    crack_specs, snap_messages = snap_crack_specs(
+        crack_specs, H,
+        enable_edge_snap=enable_edge_snap,
+        edge_snap_threshold=edge_snap_threshold,
+    )
+
     dx = W / max(nx, 1)
     dy = H / max(ny, 1)
     grid_ys = [j * dy for j in range(ny + 1)]
 
     crack_rows = set()
-    for yc in crack_ys:
-        if 0 < yc < H:
+    row_specs = {}
+    for spec in crack_specs:
+        yc = float(spec.get("y", 0.0))
+        if yc <= 0.0:
+            best_j = 0
+        elif yc >= H:
+            best_j = ny
+        else:
             best_j = min(range(1, ny), key=lambda j: abs(grid_ys[j] - yc))
-            crack_rows.add(best_j)
+        crack_rows.add(best_j)
+        row_specs.setdefault(best_j, []).append(spec)
 
     nodes = {}; nid = 1; node_grid = {}
 
@@ -242,10 +324,9 @@ def generate_panel_mesh(W, H, nx, ny, crack_ys):
     crack_pairs = []
     for j in sorted(crack_rows):
         y = round(j * dy, 8)
-        # For a horizontal crack: tangent = (1, 0), normal = (0, 1)
-        # Stored as (nb, na, y, x, tx, ty, cnx, cny) so the runner can build
-        # local-axis opening/slip without assuming global X/Y alignment.
-        tx, ty, cnx, cny = 1.0, 0.0, 0.0, 1.0
+        specs_here = row_specs.get(j, [{"angle_deg": 0.0}])
+        spec = min(specs_here, key=lambda it: abs(float(it.get("y", y)) - y))
+        tx, ty, cnx, cny = deg_to_axes(float(spec.get("angle_deg", 0.0)))
         for i in range(nx + 1):
             x = round(i * dx, 8)
             crack_pairs.append((
@@ -253,7 +334,7 @@ def generate_panel_mesh(W, H, nx, ny, crack_ys):
                 y, x, tx, ty, cnx, cny,
             ))
 
-    return nodes, tris, crack_pairs, crack_rows
+    return nodes, tris, crack_pairs, crack_rows, snap_messages, crack_specs
 
 
 # =============================================================================
@@ -731,10 +812,26 @@ class GeometryTab(QWidget):
         # Mesh density
         grp_mesh = QGroupBox("Mesh Density")
         fm = QFormLayout(grp_mesh); fm.setSpacing(6)
+        mode_row = QHBoxLayout()
+        self.rb_mesh_divisions = QRadioButton("nx / ny mode")
+        self.rb_mesh_elem_size = QRadioButton("Element size mode")
+        self.rb_mesh_divisions.setChecked(True)
+        mode_row.addWidget(self.rb_mesh_divisions)
+        mode_row.addWidget(self.rb_mesh_elem_size)
+        mode_row.addStretch()
         self.sb_nx = isb(6,  1, 200, tip="Divisions in X")
         self.sb_ny = isb(12, 1, 200, tip="Divisions in Y")
+        self.sb_max_elem = dsb(0.2, 1e-3, 1e4, 3, 0.01, tip="Maximum element edge size (m)")
+        self.sb_max_aspect = dsb(2.0, 1.0, 25.0, 2, 0.1, tip="Maximum allowable cell aspect ratio")
+        mesh_mode_wrap = QWidget(); mesh_mode_wrap.setLayout(mode_row)
+        fm.addRow("Control mode:", mesh_mode_wrap)
         fm.addRow("nx (X divisions):", self.sb_nx)
         fm.addRow("ny (Y divisions):", self.sb_ny)
+        fm.addRow("Max element size (m):", self.sb_max_elem)
+        fm.addRow("Max aspect ratio:", self.sb_max_aspect)
+        self.lbl_mesh_preview = mk_lbl("", "sub")
+        self.lbl_mesh_preview.setWordWrap(True)
+        fm.addRow("Preview:", self.lbl_mesh_preview)
         lv.addWidget(grp_mesh)
 
         # Generate Mesh + Validate buttons
@@ -781,15 +878,31 @@ class GeometryTab(QWidget):
         row_inp = QHBoxLayout()
         self.txt_crack_y = QLineEdit()
         self.txt_crack_y.setPlaceholderText("e.g. 0.5, 1.0, 1.5  (m from base)")
+        self.sb_crack_angle = dsb(0.0, -180., 180., 1, 1.0, tip="Default crack orientation angle from horizontal (deg)")
         self.btn_crack_mode = QPushButton("✏ Crack Mode")
         self.btn_crack_mode.setObjectName("flat")
         self.btn_crack_mode.setCheckable(True)
         self.btn_crack_mode.setToolTip("Toggle crack placement mode: click canvas to add/remove crack Y")
         row_inp.addWidget(self.txt_crack_y, stretch=1)
+        row_inp.addWidget(mk_lbl("θ (deg):"))
+        row_inp.addWidget(self.sb_crack_angle)
         row_inp.addWidget(self.btn_crack_mode)
         vc.addLayout(row_inp)
         self.lbl_crack_ys = mk_lbl("No crack lines defined.", "sub")
         vc.addWidget(self.lbl_crack_ys)
+        snap_row = QHBoxLayout()
+        self.chk_edge_snap = QCheckBox("Enable edge snapping")
+        self.chk_edge_snap.setChecked(True)
+        self.sb_edge_snap_threshold = dsb(0.15, 0.0, 0.49, 2, 0.01, w=90, tip="Fraction of panel height used for edge snapping")
+        snap_row.addWidget(self.chk_edge_snap)
+        snap_row.addWidget(mk_lbl("Threshold:"))
+        snap_row.addWidget(self.sb_edge_snap_threshold)
+        snap_row.addStretch()
+        vc.addLayout(snap_row)
+        self.lbl_edge_snap = mk_lbl("", "sub")
+        self.lbl_edge_snap.setStyleSheet(f"color:{C4};font-size:12px;font-weight:bold;")
+        self.lbl_edge_snap.setWordWrap(True)
+        vc.addWidget(self.lbl_edge_snap)
         # ── Hand-draw sub-section ──────────────────────────────────────────
         vc.addWidget(sep())
         row_hd = QHBoxLayout()
@@ -937,7 +1050,10 @@ class GeometryTab(QWidget):
         self._crack_ys      = []
         self._hand_strokes  = []   # mirror of canvas.hand_strokes
         self._hand_crack_ys = []   # y_mean derived from each hand stroke
+        self._hand_crack_defs = []
         self._bg_image_path = ""
+        self._snap_messages = []
+        self._syncing_mesh_controls = False
 
         # wire
         self.btn_gen.clicked.connect(self._generate)
@@ -966,11 +1082,107 @@ class GeometryTab(QWidget):
         self.chk_show_crack_links.toggled.connect(self._toggle_crack_links)
         for sb in [self.sb_W, self.sb_H]:
             sb.valueChanged.connect(self._on_dim_change)
+            sb.valueChanged.connect(self._on_mesh_control_changed)
+        self.sb_nx.valueChanged.connect(self._on_mesh_divisions_changed)
+        self.sb_ny.valueChanged.connect(self._on_mesh_divisions_changed)
+        self.sb_max_elem.valueChanged.connect(self._on_mesh_element_mode_changed)
+        self.sb_max_aspect.valueChanged.connect(self._on_mesh_element_mode_changed)
+        self.rb_mesh_divisions.toggled.connect(self._on_mesh_mode_toggled)
+        self.rb_mesh_elem_size.toggled.connect(self._on_mesh_mode_toggled)
+        self.chk_edge_snap.toggled.connect(self._on_dim_change)
+        self.sb_edge_snap_threshold.valueChanged.connect(self._on_dim_change)
         self._on_dim_change()
+        self._sync_mesh_controls_from_divisions()
+        self._on_mesh_mode_toggled()
 
     # ── handlers ──────────────────────────────────────────────────────────────
     def _on_dim_change(self):
         self.canvas.set_pending_cracks(self._crack_ys, self.sb_W.value(), self.sb_H.value())
+        self._update_edge_snap_preview()
+
+    def _current_mesh_mode(self):
+        return "elem_size" if self.rb_mesh_elem_size.isChecked() else "divisions"
+
+    def _sync_mesh_controls_from_divisions(self):
+        if self._syncing_mesh_controls:
+            return
+        self._syncing_mesh_controls = True
+        try:
+            W = self.sb_W.value(); H = self.sb_H.value()
+            nx = self.sb_nx.value(); ny = self.sb_ny.value()
+            dx = W / max(nx, 1); dy = H / max(ny, 1)
+            self.sb_max_elem.setValue(max(dx, dy))
+            self.sb_max_aspect.setValue(max(dx / max(dy, 1e-12), dy / max(dx, 1e-12)))
+            self.lbl_mesh_preview.setText(mesh_preview_text(W, H, nx, ny))
+        finally:
+            self._syncing_mesh_controls = False
+
+    def _sync_mesh_controls_from_element_mode(self):
+        if self._syncing_mesh_controls:
+            return
+        self._syncing_mesh_controls = True
+        try:
+            nx, ny = compute_mesh_divisions(
+                self.sb_W.value(), self.sb_H.value(),
+                self.sb_max_elem.value(), self.sb_max_aspect.value(),
+            )
+            self.sb_nx.setValue(nx)
+            self.sb_ny.setValue(ny)
+            self.lbl_mesh_preview.setText(mesh_preview_text(self.sb_W.value(), self.sb_H.value(), nx, ny))
+        finally:
+            self._syncing_mesh_controls = False
+
+    def _on_mesh_mode_toggled(self):
+        use_elem = self._current_mesh_mode() == "elem_size"
+        self.sb_nx.setEnabled(not use_elem)
+        self.sb_ny.setEnabled(not use_elem)
+        if use_elem:
+            self._sync_mesh_controls_from_element_mode()
+        else:
+            self._sync_mesh_controls_from_divisions()
+
+    def _on_mesh_divisions_changed(self):
+        if self._current_mesh_mode() == "divisions":
+            self._sync_mesh_controls_from_divisions()
+        else:
+            self.lbl_mesh_preview.setText(mesh_preview_text(self.sb_W.value(), self.sb_H.value(), self.sb_nx.value(), self.sb_ny.value()))
+
+    def _on_mesh_element_mode_changed(self):
+        if self._current_mesh_mode() == "elem_size":
+            self._sync_mesh_controls_from_element_mode()
+        else:
+            self.lbl_mesh_preview.setText(mesh_preview_text(self.sb_W.value(), self.sb_H.value(), self.sb_nx.value(), self.sb_ny.value()))
+
+    def _on_mesh_control_changed(self):
+        if self._current_mesh_mode() == "elem_size":
+            self._sync_mesh_controls_from_element_mode()
+        else:
+            self._sync_mesh_controls_from_divisions()
+
+    def _build_crack_specs(self):
+        H = max(self.sb_H.value(), 1e-6)
+        tol = max(0.01 * H, H / max(self.sb_ny.value(), 1) * 0.25)
+        specs = []
+        manual_ys = []
+        for y in self._crack_ys:
+            if any(abs(y - hy) < tol for hy in self._hand_crack_ys):
+                continue
+            manual_ys.append(y)
+        for y in manual_ys:
+            specs.append({"y": float(y), "angle_deg": float(self.sb_crack_angle.value()), "source": "manual"})
+        specs.extend(dict(item) for item in self._hand_crack_defs)
+        specs.sort(key=lambda item: float(item.get("y", 0.0)))
+        return specs
+
+    def _update_edge_snap_preview(self):
+        specs = self._build_crack_specs()
+        _, msgs = snap_crack_specs(
+            specs, self.sb_H.value(),
+            enable_edge_snap=self.chk_edge_snap.isChecked(),
+            edge_snap_threshold=self.sb_edge_snap_threshold.value(),
+        )
+        self._snap_messages = msgs
+        self.lbl_edge_snap.setText("\n".join(msgs) if msgs else "")
 
     def _sync_background_label(self):
         if self._bg_image_path:
@@ -1000,7 +1212,10 @@ class GeometryTab(QWidget):
         if not stroke:
             return None
         y_mean = sum(pt[1] for pt in stroke) / len(stroke)
-        return snap_crack_y(y_mean, self.sb_H.value(), self.sb_ny.value(), allow_edge=True)
+        return snap_crack_y(
+            y_mean, self.sb_H.value(), self.sb_ny.value(),
+            allow_edge=self.chk_edge_snap.isChecked(),
+        )
 
     def _toggle_crack_mode(self, on):
         if on:
@@ -1054,10 +1269,13 @@ class GeometryTab(QWidget):
 
     def _refresh_crack_label(self):
         if self._crack_ys:
-            self.lbl_crack_ys.setText(f"{len(self._crack_ys)} crack line(s) at Y = " +
-                                       ", ".join(f"{y:.3f}" for y in self._crack_ys))
+            self.lbl_crack_ys.setText(
+                f"{len(self._crack_ys)} crack line(s) at Y = " +
+                ", ".join(f"{y:.3f}" for y in self._crack_ys) +
+                f"   |   default θ = {self.sb_crack_angle.value():.1f}°")
         else:
             self.lbl_crack_ys.setText("No crack lines defined.")
+        self._update_edge_snap_preview()
 
     # ── hand-draw handlers ────────────────────────────────────────────────────
     def _toggle_hand_draw(self, on):
@@ -1074,10 +1292,16 @@ class GeometryTab(QWidget):
         H = max(self.sb_H.value(), 1e-6)
         tol = max(0.01 * H, H / max(self.sb_ny.value(), 1) * 0.25)
         new_ys = []
+        new_defs = []
         for stroke in strokes:
             y_snap = self._snap_stroke_y(stroke)
             if y_snap is not None:
                 new_ys.append(y_snap)
+                new_defs.append({
+                    "y": float(y_snap),
+                    "angle_deg": float(stroke_angle_deg(stroke, self.sb_crack_angle.value())),
+                    "source": "hand",
+                })
         for y_old in self._hand_crack_ys:
             if not any(abs(y_old - y_new) < tol for y_new in new_ys):
                 self._remove_crack_y(y_old)
@@ -1086,11 +1310,15 @@ class GeometryTab(QWidget):
                 self._add_crack_y(y_new)
         self._hand_strokes  = strokes
         self._hand_crack_ys = new_ys
+        self._hand_crack_defs = new_defs
         if new_ys:
-            ys_txt = ", ".join(f"{y:.3f}" for y in new_ys)
+            ys_txt = ", ".join(
+                f"{item['y']:.3f}@{item['angle_deg']:.1f}°" for item in new_defs
+            )
             self.lbl_hand_strokes.setText(f"hand strokes: {len(strokes)}  |  snapped rows: {ys_txt}")
         else:
             self.lbl_hand_strokes.setText(f"hand strokes: {len(strokes)}")
+        self._update_edge_snap_preview()
 
     def _generate(self):
         # Merge any Y values the user typed but hasn't committed yet
@@ -1118,11 +1346,28 @@ class GeometryTab(QWidget):
                 self._refresh_crack_label()
         # Keep existing _crack_ys if text field is empty (canvas-click values)
         W = self.sb_W.value(); H = self.sb_H.value()
-        nx = self.sb_nx.value(); ny = self.sb_ny.value()
-        nodes, tris, crack_pairs, crack_rows = generate_panel_mesh(W, H, nx, ny, self._crack_ys)
+        if self._current_mesh_mode() == "elem_size":
+            nx, ny = compute_mesh_divisions(W, H, self.sb_max_elem.value(), self.sb_max_aspect.value())
+            self._syncing_mesh_controls = True
+            try:
+                self.sb_nx.setValue(nx)
+                self.sb_ny.setValue(ny)
+            finally:
+                self._syncing_mesh_controls = False
+        else:
+            nx = self.sb_nx.value(); ny = self.sb_ny.value()
+        crack_specs = self._build_crack_specs()
+        nodes, tris, crack_pairs, crack_rows, snap_messages, snapped_specs = generate_panel_mesh(
+            W, H, nx, ny, self._crack_ys,
+            crack_specs=crack_specs,
+            enable_edge_snap=self.chk_edge_snap.isChecked(),
+            edge_snap_threshold=self.sb_edge_snap_threshold.value(),
+        )
         self._mesh_data = dict(nodes=nodes, tris=tris, crack_pairs=crack_pairs,
                                crack_rows=crack_rows, W=W, H=H, nx=nx, ny=ny,
-                               crack_ys=self._crack_ys)
+                               crack_ys=self._crack_ys,
+                               crack_specs=snapped_specs,
+                               snap_messages=snap_messages)
         self._bc_nodes = {}; self._load_nodes = {}
         self.canvas.set_mesh(nodes, tris, crack_pairs, crack_rows, W, H)
         self.canvas.set_bc_nodes(self._bc_nodes)
@@ -1131,6 +1376,8 @@ class GeometryTab(QWidget):
         self.lbl_mesh_info.setText(
             f"Mesh ready: {nn} nodes, {nt} triangles, {nc} crack links, "
             f"{len(self._crack_ys)} crack line(s).")
+        self.lbl_mesh_preview.setText(mesh_preview_text(W, H, nx, ny))
+        self.lbl_edge_snap.setText("\n".join(snap_messages) if snap_messages else "")
         self._update_bc_table(); self._update_load_table()
 
     def _on_node_clicked(self, nid):
@@ -1343,21 +1590,84 @@ class GeometryTab(QWidget):
             "panel_t":  self.sb_t.value(),
             "panel_Ec": self.sb_Ec.value(),
             "panel_nu": self.sb_nu.value(),
+            "mesh_mode": self._current_mesh_mode(),
             "mesh_nx":  self.sb_nx.value(),
             "mesh_ny":  self.sb_ny.value(),
+            "max_elem_size": self.sb_max_elem.value(),
+            "max_aspect": self.sb_max_aspect.value(),
+            "enable_edge_snap": self.chk_edge_snap.isChecked(),
+            "edge_snap_threshold": self.sb_edge_snap_threshold.value(),
+            "default_crack_angle_deg": self.sb_crack_angle.value(),
             "crack_ys": list(self._crack_ys),
         }
         if md:
             p["mesh_nodes"]       = {str(k): list(v) for k, v in md["nodes"].items()}
             p["mesh_tris"]        = [[e, n1, n2, n3] for e, n1, n2, n3 in md["tris"]]
             p["mesh_crack_pairs"] = [list(cp) for cp in md["crack_pairs"]]
+            p["crack_specs"]      = [dict(spec) for spec in md.get("crack_specs", [])]
+            p["snap_messages"]    = list(md.get("snap_messages", []))
         p["bc_nodes"]    = {str(k): list(v) for k, v in self._bc_nodes.items()}
         p["load_nodes"]  = {str(k): list(v) for k, v in self._load_nodes.items()}
         p["hand_crack_strokes"] = [[[pt[0], pt[1]] for pt in s]
                                    for s in self._hand_strokes]
         p["hand_crack_ys"]      = list(self._hand_crack_ys)
+        p["hand_crack_defs"]    = [dict(item) for item in self._hand_crack_defs]
         p["background_image"]   = self._bg_image_path
         return p
+
+    def set_project_state(self, state):
+        self._syncing_mesh_controls = True
+        try:
+            self.sb_W.setValue(float(state.get("panel_W", 1.0)))
+            self.sb_H.setValue(float(state.get("panel_H", 2.0)))
+            self.sb_t.setValue(float(state.get("panel_t", 0.2)))
+            self.sb_Ec.setValue(float(state.get("panel_Ec", 30000.0)))
+            self.sb_nu.setValue(float(state.get("panel_nu", 0.2)))
+            self.sb_nx.setValue(int(state.get("mesh_nx", 6)))
+            self.sb_ny.setValue(int(state.get("mesh_ny", 12)))
+            self.sb_max_elem.setValue(float(state.get("max_elem_size", 0.2)))
+            self.sb_max_aspect.setValue(float(state.get("max_aspect", 2.0)))
+            self.chk_edge_snap.setChecked(bool(state.get("enable_edge_snap", True)))
+            self.sb_edge_snap_threshold.setValue(float(state.get("edge_snap_threshold", 0.15)))
+            self.sb_crack_angle.setValue(float(state.get("default_crack_angle_deg", 0.0)))
+            mode = state.get("mesh_mode", "divisions")
+            self.rb_mesh_elem_size.setChecked(mode == "elem_size")
+            self.rb_mesh_divisions.setChecked(mode != "elem_size")
+        finally:
+            self._syncing_mesh_controls = False
+        self._crack_ys = list(float(v) for v in state.get("crack_ys", []))
+        self._hand_crack_ys = list(float(v) for v in state.get("hand_crack_ys", []))
+        self._hand_crack_defs = [dict(item) for item in state.get("hand_crack_defs", [])]
+        self._hand_strokes = [list((float(pt[0]), float(pt[1])) for pt in stroke)
+                              for stroke in state.get("hand_crack_strokes", [])]
+        self.canvas.set_hand_strokes(self._hand_strokes)
+        self._bg_image_path = str(state.get("background_image", "") or "")
+        if self._bg_image_path and Path(self._bg_image_path).exists():
+            self.canvas.set_background_image(self._bg_image_path)
+        else:
+            self._bg_image_path = ""
+            self.canvas.clear_background_image()
+        self._sync_background_label()
+        self._update_crack_text()
+        self._refresh_crack_label()
+        self._on_mesh_mode_toggled()
+        self._generate()
+        self._bc_nodes = {int(k): tuple(v) for k, v in state.get("bc_nodes", {}).items()}
+        self._load_nodes = {int(k): tuple(v) for k, v in state.get("load_nodes", {}).items()}
+        self.canvas.set_bc_nodes(self._bc_nodes)
+        self.canvas.set_load_nodes(self._load_nodes)
+        self._update_bc_table()
+        self._update_load_table()
+
+    def reset_project_state(self):
+        self.set_project_state({})
+        self._mesh_data = None
+        self._bc_nodes = {}
+        self._load_nodes = {}
+        self.canvas.set_mesh({}, [], [], set(), self.sb_W.value(), self.sb_H.value())
+        self.canvas.set_bc_nodes(self._bc_nodes)
+        self.canvas.set_load_nodes(self._load_nodes)
+        self.lbl_mesh_info.setText("Mesh not generated.")
 
     def get_mesh_data(self):
         return self._mesh_data
@@ -1811,6 +2121,26 @@ class CrackMaterialTab(QWidget):
                 pass
         return {"crack_mat_data": data}
 
+    def set_project_state(self, state, geo_tab=None):
+        geo = geo_tab or self._geo_ref
+        if geo is not None:
+            self.refresh_from_geometry(geo)
+        rows = list(state.get("crack_mat_data", [])) or list(state.get("crack_materials", []))
+        for row_idx, vals in enumerate(rows):
+            if row_idx >= self.tbl.rowCount():
+                break
+            row_vals = self._row_values(row_idx)
+            row_vals.update(dict(vals))
+            row_vals.setdefault("below_node", row_vals.get("below_node", 0))
+            row_vals.setdefault("above_node", row_vals.get("above_node", 0))
+            self._set_row_values(row_idx, row_vals)
+        if self.tbl.rowCount():
+            self.tbl.selectRow(0)
+
+    def reset_project_state(self):
+        self.tbl.setRowCount(0)
+        self.lbl_selected.setText("No crack element selected.")
+
 
 # =============================================================================
 # Tab 3: Analysis Settings
@@ -1818,11 +2148,54 @@ class CrackMaterialTab(QWidget):
 class AnalysisTab(QWidget):
     def __init__(self):
         super().__init__()
-        outer = QVBoxLayout(self); outer.setContentsMargins(16, 16, 16, 16); outer.setSpacing(10)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+
+        content = QWidget()
+        outer = QVBoxLayout(content)
+        outer.setContentsMargins(16, 16, 16, 16)
+        outer.setSpacing(10)
         outer.addWidget(mk_lbl("Analysis Configuration", "heading"))
 
-        grp = QGroupBox("Static Analysis")
-        form = QFormLayout(grp); form.setSpacing(8)
+        grp_static = QGroupBox("Static Analysis")
+        grp_static.setMinimumHeight(320)
+        grp_static.setStyleSheet(f"""
+QGroupBox {{
+    border: 1px solid {BORDER};
+    border-radius: 6px;
+    margin-top: 16px;
+    padding: 14px 10px 10px 10px;
+}}
+QComboBox, QDoubleSpinBox, QSpinBox {{
+    background: {BG_INPUT};
+    color: {TXT};
+    border: 1px solid {BORDER};
+    border-radius: 4px;
+    padding: 6px 10px;
+    min-height: 32px;
+    font-size: 13px;
+}}
+QComboBox::drop-down {{
+    border: none;
+    width: 22px;
+}}
+QComboBox QAbstractItemView {{
+    background: {BG_CARD};
+    color: {TXT};
+    border: 1px solid {BORDER};
+    selection-background-color: {C1};
+}}
+""")
+        form = QFormLayout(grp_static)
+        form.setSpacing(10)
+        form.setContentsMargins(10, 10, 10, 10)
+        form.setRowWrapPolicy(QFormLayout.DontWrapRows)
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
 
         self.cmb_type = QComboBox()
         self.cmb_type.addItems(["DisplacementControl", "LoadControl"])
@@ -1832,6 +2205,7 @@ class AnalysisTab(QWidget):
         self.cmb_constraints.addItems(["Plain", "Transformation", "Lagrange"])
         self.cmb_numberer = QComboBox()
         self.cmb_numberer.addItems(["RCM", "Plain"])
+
         self.sb_di  = dsb(0.0005, 1e-7, 1e3, 6, 0.0001,
                           tip="Displacement increment per step (m, DisplacementControl)")
         self.sb_tgt = dsb(0.05,   0.0,  1e4, 6, 0.01,
@@ -1840,9 +2214,14 @@ class AnalysisTab(QWidget):
                           tip="Load increment fraction per step (LoadControl, 0.01 = 1% of total)")
         self.cmb_alg = QComboBox()
         self.cmb_alg.addItems(["NewtonLineSearch", "Newton", "KrylovNewton", "ModifiedNewton"])
-        self.sb_tol  = dsb(1e-8,  1e-14, 1e-2, 12, 1e-9,  tip="Convergence tolerance (NormUnbalance)")
-        self.sb_iter = isb(400, 1, 5000,                    tip="Max iterations per step")
-        self.sb_lam  = dsb(50., 0.1, 1e9, 1, 5.,           tip="Stop if load factor exceeds this value")
+        self.sb_tol  = dsb(1e-8,  1e-14, 1e-2, 12, 1e-9, tip="Convergence tolerance (NormUnbalance)")
+        self.sb_iter = isb(400, 1, 5000, tip="Max iterations per step")
+        self.sb_lam  = dsb(50., 0.1, 1e9, 1, 5., tip="Stop if load factor exceeds this value")
+
+        for w in [self.cmb_type, self.cmb_system, self.cmb_constraints, self.cmb_numberer, self.cmb_alg]:
+            w.setMinimumHeight(32)
+        for w in [self.sb_di, self.sb_tgt, self.sb_li, self.sb_tol, self.sb_iter, self.sb_lam]:
+            w.setMinimumHeight(32)
 
         form.addRow("Analysis type:",       self.cmb_type)
         form.addRow("Equation solver:",     self.cmb_system)
@@ -1855,8 +2234,30 @@ class AnalysisTab(QWidget):
         form.addRow("Tolerance:",           self.sb_tol)
         form.addRow("Max iterations:",      self.sb_iter)
         form.addRow("Load factor cap λ:",   self.sb_lam)
+        outer.addWidget(grp_static)
 
-        outer.addWidget(grp)
+        grp_lp = QGroupBox("Loading Protocol")
+        flp = QFormLayout(grp_lp)
+        flp.setSpacing(8)
+        proto_row = QHBoxLayout()
+        self.rb_monotonic = QRadioButton("Monotonic")
+        self.rb_reversed_cyclic = QRadioButton("Reversed-Cyclic")
+        self.rb_monotonic.setChecked(True)
+        proto_row.addWidget(self.rb_monotonic)
+        proto_row.addWidget(self.rb_reversed_cyclic)
+        proto_row.addStretch()
+        proto_wrap = QWidget(); proto_wrap.setLayout(proto_row)
+        self.sb_cycle_count = isb(3, 1, 100, tip="Number of reversed cycles")
+        self.sb_cycle_amplitude = dsb(0.005, 1e-6, 1e6, 6, 0.001, tip="Cycle amplitude in active control units")
+        self.sb_cycle_scale = dsb(1.0, 0.1, 10.0, 2, 0.1, tip="Amplitude multiplier applied each cycle")
+        self.sb_half_cycle_steps = isb(10, 1, 1000, tip="Analysis steps per half-cycle")
+        self.lbl_cycle_amp = mk_lbl("Amplitude per cycle (m):", "sub")
+        flp.addRow("Protocol:", proto_wrap)
+        flp.addRow("Number of cycles:", self.sb_cycle_count)
+        flp.addRow("Amplitude per cycle:", self.sb_cycle_amplitude)
+        flp.addRow("Amplitude increase:", self.sb_cycle_scale)
+        flp.addRow("Steps per half-cycle:", self.sb_half_cycle_steps)
+        outer.addWidget(grp_lp)
 
         note = mk_lbl(
             "DisplacementControl: applies incremental displacement at the load DOF.\n"
@@ -1866,6 +2267,23 @@ class AnalysisTab(QWidget):
         note.setWordWrap(True)
         outer.addWidget(note)
         outer.addStretch()
+
+        scroll.setWidget(content)
+        root.addWidget(scroll)
+
+        self.cmb_type.currentTextChanged.connect(self._update_protocol_labels)
+        self.rb_monotonic.toggled.connect(self._update_protocol_visibility)
+        self._update_protocol_labels()
+        self._update_protocol_visibility()
+
+    def _update_protocol_labels(self):
+        units = "m" if self.cmb_type.currentText() == "DisplacementControl" else "load factor"
+        self.sb_cycle_amplitude.setToolTip(f"Cycle amplitude in {units}")
+
+    def _update_protocol_visibility(self):
+        on = self.rb_reversed_cyclic.isChecked()
+        for w in [self.sb_cycle_count, self.sb_cycle_amplitude, self.sb_cycle_scale, self.sb_half_cycle_steps]:
+            w.setEnabled(on)
 
     def get_params(self):
         return {
@@ -1880,7 +2298,37 @@ class AnalysisTab(QWidget):
             "tol":           self.sb_tol.value(),
             "max_iter":      self.sb_iter.value(),
             "max_load_factor": self.sb_lam.value(),
+            "loading_protocol": "reversed-cyclic" if self.rb_reversed_cyclic.isChecked() else "monotonic",
+            "cycle_count": self.sb_cycle_count.value(),
+            "cycle_amplitude": self.sb_cycle_amplitude.value(),
+            "cycle_amplitude_scale": self.sb_cycle_scale.value(),
+            "steps_per_half_cycle": self.sb_half_cycle_steps.value(),
         }
+
+    def set_project_state(self, state):
+        self.cmb_type.setCurrentText(state.get("analysis_type", "DisplacementControl"))
+        self.cmb_system.setCurrentText(state.get("solver_system", "UmfPack"))
+        self.cmb_constraints.setCurrentText(state.get("constraint_handler", "Plain"))
+        self.cmb_numberer.setCurrentText(state.get("numberer", "RCM"))
+        self.sb_di.setValue(float(state.get("disp_incr", 0.0005)))
+        self.sb_tgt.setValue(float(state.get("target_disp", 0.05)))
+        self.sb_li.setValue(float(state.get("load_incr", 0.01)))
+        self.cmb_alg.setCurrentText(state.get("algorithm", "NewtonLineSearch"))
+        self.sb_tol.setValue(float(state.get("tol", 1e-8)))
+        self.sb_iter.setValue(int(state.get("max_iter", 400)))
+        self.sb_lam.setValue(float(state.get("max_load_factor", 50.0)))
+        protocol = state.get("loading_protocol", "monotonic")
+        self.rb_reversed_cyclic.setChecked(protocol == "reversed-cyclic")
+        self.rb_monotonic.setChecked(protocol != "reversed-cyclic")
+        self.sb_cycle_count.setValue(int(state.get("cycle_count", 3)))
+        self.sb_cycle_amplitude.setValue(float(state.get("cycle_amplitude", 0.005)))
+        self.sb_cycle_scale.setValue(float(state.get("cycle_amplitude_scale", 1.0)))
+        self.sb_half_cycle_steps.setValue(int(state.get("steps_per_half_cycle", 10)))
+        self._update_protocol_labels()
+        self._update_protocol_visibility()
+
+    def reset_project_state(self):
+        self.set_project_state({})
 
 
 # =============================================================================
@@ -2720,7 +3168,8 @@ def _check_multisurf_2d_link_compat(ops):
         return False
 
 
-def _create_eppgap_macro(ops, ci, nb, na, kn, kt, gap, eta, elt_base):
+def _create_eppgap_macro(ops, ci, nb, na, kn, kt, gap, eta, elt_base,
+                         tx=1.0, ty=0.0, nx_=0.0, ny_=1.0):
     """
     Fallback macro-element: 4 parallel shear springs (ElasticPPGap) +
     1 normal spring.  Provides nonzero initial stiffness in both directions.
@@ -2745,14 +3194,16 @@ def _create_eppgap_macro(ops, ci, nb, na, kn, kt, gap, eta, elt_base):
         except Exception:
             ops.uniaxialMaterial('Elastic', tag_t, frac_kt)
         eid = elt_base + ci * 5 + k
-        ops.element('zeroLength', eid, nb, na, '-mat', tag_t, '-dir', 1)
+        ops.element('zeroLength', eid, nb, na, '-mat', tag_t, '-dir', 1,
+                    '-orient', tx, ty, 0.0, nx_, ny_, 0.0)
         elt_ids.append(eid)
 
     # --- 1 normal spring ---
     tag_n = base_mat + 4
     ops.uniaxialMaterial('Elastic', tag_n, kn)
     eid_n = elt_base + ci * 5 + 4
-    ops.element('zeroLength', eid_n, nb, na, '-mat', tag_n, '-dir', 2)
+    ops.element('zeroLength', eid_n, nb, na, '-mat', tag_n, '-dir', 2,
+                '-orient', tx, ty, 0.0, nx_, ny_, 0.0)
     elt_ids.append(eid_n)
     return elt_ids
 
@@ -3084,6 +3535,20 @@ def _cutback(ops, p, at, ln, dof, incr, max_cuts=12,
     return -1, cur, 'Newton'
 
 
+def _build_loading_targets(p):
+    protocol = str(p.get('loading_protocol', 'monotonic')).lower()
+    if protocol != 'reversed-cyclic':
+        return []
+    cycle_count = max(int(p.get('cycle_count', 3)), 1)
+    base_amp = float(p.get('cycle_amplitude', p.get('target_disp', 0.005)))
+    amp_scale = max(float(p.get('cycle_amplitude_scale', 1.0)), 1e-9)
+    amps = [base_amp * (amp_scale ** idx) for idx in range(cycle_count)]
+    targets = []
+    for amp in amps:
+        targets.extend([float(amp), -float(amp), 0.0])
+    return targets
+
+
 # ── Main model runner ────────────────────────────────────────────────────────
 def run_model_2d(p):
     import openseespy.opensees as ops
@@ -3257,7 +3722,8 @@ def run_model_2d(p):
                                        0.5, 0.3, 1.0, 0.785, 0.01,
                                        0)
                         elt_id = elt_base + ci
-                        ops.element('zeroLengthND', elt_id, nb, na, mat_id)
+                        ops.element('zeroLengthND', elt_id, nb, na, mat_id,
+                                    '-orient', c_nx, c_ny, 0.0, c_tx, c_ty, 0.0)
                         n_mscrack_ok += 1
                         pair_meta.append(dict(
                             element_index=ci + 1, below_node=nb, above_node=na,
@@ -3272,10 +3738,12 @@ def run_model_2d(p):
                     except Exception as e_ms:
                         _log(f"[FALLBACK REASON] crack={ci} y={yc:.6f} MultiSurfCrack2D link failed: {e_ms}")
 
-                _create_eppgap_macro(ops, ci, nb, na, kn, kt, gap, eta, elt_base_macro)
+                _create_eppgap_macro(ops, ci, nb, na, kn, kt, gap, eta, elt_base_macro,
+                                     c_tx, c_ty, c_nx, c_ny)
                 n_fallback += 1
             elif use_macro:
-                _create_eppgap_macro(ops, ci, nb, na, kn, kt, gap, eta, elt_base_macro)
+                _create_eppgap_macro(ops, ci, nb, na, kn, kt, gap, eta, elt_base_macro,
+                                     c_tx, c_ty, c_nx, c_ny)
             else:
                 # Standard materials (Elastic, ElasticPPGap, Steel01)
                 mat_t = mat_id * 2
@@ -3292,7 +3760,8 @@ def run_model_2d(p):
                     ops.uniaxialMaterial('Elastic', mat_n, kn)
 
                 elt_id = elt_base + ci
-                ops.element('zeroLength', elt_id, nb, na, '-mat', mat_t, mat_n, '-dir', 1, 2)
+                ops.element('zeroLength', elt_id, nb, na, '-mat', mat_t, mat_n, '-dir', 1, 2,
+                            '-orient', c_tx, c_ty, 0.0, c_nx, c_ny, 0.0)
 
             pair_meta.append(dict(
                 element_index=ci + 1, below_node=nb, above_node=na,
@@ -3359,6 +3828,9 @@ def run_model_2d(p):
 
         active_sys = p.get('solver_system', 'UmfPack')
         active_constr = p.get('constraint_handler', 'Plain')
+        protocol = str(p.get('loading_protocol', 'monotonic')).lower()
+        cycle_targets = _build_loading_targets(p)
+        cycle_half_steps = max(int(p.get('steps_per_half_cycle', 10)), 1)
 
         def collect():
             disp_l.append(ops.nodeDisp(ref_nid, ref_dof))
@@ -3398,64 +3870,94 @@ def run_model_2d(p):
         else:
             base_incr = float(p.get('disp_incr', 0.0005))
 
-        # ── (D) Robust step 0 with full recovery ────────────────────────────
-        ok0, alg0, active_sys, active_constr = _step_with_recovery(
-            ops, p, at, ref_nid, ref_dof, base_incr, step_num=0)
-
-        if ok0 == 0:
+        if protocol == 'reversed-cyclic' and cycle_targets:
             collect()
-            _log(f"[STEP0] OK — alg={alg0}  sys={active_sys}  constr={active_constr}")
-        else:
-            n_fixed_dofs = sum(int(v[0]) + int(v[1]) for v in bc_nodes.values())
-            total_load = sum(abs(float(Fx)) + abs(float(Fy))
-                             for Fx, Fy in load_nodes.values())
-            _log(f"[STEP0 FAIL] Nodes={len(mesh_nodes)}, Elements={len(mesh_tris)}, "
-                 f"Fixed DOFs={n_fixed_dofs}, ref_nid={ref_nid}, ref_dof={ref_dof}, "
-                 f"Total load={total_load:.4g}")
-            raise RuntimeError(
-                f"Analysis failed at step 0.\n"
-                f"  Nodes={len(mesh_nodes)}, Elements={len(mesh_tris)}, "
-                f"Fixed DOFs={n_fixed_dofs}, ref_nid={ref_nid}, ref_dof={ref_dof}\n"
-                "  All solver/constraint/algorithm/test combos exhausted.\n"
-                "Possible causes: insufficient BCs, singular stiffness, bad mesh.")
-
-        # ── Remaining steps ──────────────────────────────────────────────────
-        if at == 'LoadControl':
-            incr  = base_incr
-            steps = max(0, int(1. / max(incr, 1e-12)) - 1)
-            for st in range(steps):
-                ok, cur, alg = _cutback(ops, p, at, ref_nid, ref_dof, incr,
-                                        sys_type=active_sys, constr_type=active_constr)
-                if ok == 0:
-                    collect(); incr = min(incr, cur)
-                else:
-                    # Try full recovery for this step
-                    ok2, alg2, s2, c2 = _step_with_recovery(
-                        ops, p, at, ref_nid, ref_dof, incr, step_num=st+1)
-                    if ok2 == 0:
-                        collect(); active_sys = s2; active_constr = c2
-                    else:
-                        failed = True; fm = f"step {st + 1} alg={alg}"; break
-        else:
-            tgt   = float(p.get('target_disp', 0.05))
-            incr  = base_incr
-            steps = max(0, int(abs(tgt) / max(abs(incr), 1e-12)) - 1)
-            for st in range(steps):
+            _log(f"[CYCLIC] targets={cycle_targets}  half_cycle_steps={cycle_half_steps}")
+            st = 0
+            for target in cycle_targets:
+                if failed:
+                    break
                 try:
-                    if abs(ops.getTime()) > ml:
-                        failed = True; fm = "load factor cap reached"; break
-                except: pass
-                ok, cur, alg = _cutback(ops, p, at, ref_nid, ref_dof, incr,
-                                        sys_type=active_sys, constr_type=active_constr)
-                if ok == 0:
-                    collect(); incr = min(incr, cur)
-                else:
-                    ok2, alg2, s2, c2 = _step_with_recovery(
-                        ops, p, at, ref_nid, ref_dof, incr, step_num=st+1)
-                    if ok2 == 0:
-                        collect(); active_sys = s2; active_constr = c2
+                    current = float(ops.getTime()) if at == 'LoadControl' else float(ops.nodeDisp(ref_nid, ref_dof))
+                except Exception:
+                    current = 0.0
+                incr = (float(target) - current) / max(cycle_half_steps, 1)
+                for _ in range(cycle_half_steps):
+                    st += 1
+                    try:
+                        if abs(ops.getTime()) > ml:
+                            failed = True; fm = 'load factor cap reached'; break
+                    except Exception:
+                        pass
+                    ok, cur, alg = _cutback(ops, p, at, ref_nid, ref_dof, incr,
+                                            sys_type=active_sys, constr_type=active_constr)
+                    if ok == 0:
+                        collect(); incr = cur
                     else:
-                        failed = True; fm = f"step {st + 1} alg={alg}"; break
+                        ok2, alg2, s2, c2 = _step_with_recovery(
+                            ops, p, at, ref_nid, ref_dof, incr, step_num=st)
+                        if ok2 == 0:
+                            collect(); active_sys = s2; active_constr = c2
+                        else:
+                            failed = True; fm = f'cycle step {st} alg={alg}'; break
+        else:
+            # ── (D) Robust step 0 with full recovery ────────────────────────
+            ok0, alg0, active_sys, active_constr = _step_with_recovery(
+                ops, p, at, ref_nid, ref_dof, base_incr, step_num=0)
+
+            if ok0 == 0:
+                collect()
+                _log(f"[STEP0] OK — alg={alg0}  sys={active_sys}  constr={active_constr}")
+            else:
+                n_fixed_dofs = sum(int(v[0]) + int(v[1]) for v in bc_nodes.values())
+                total_load = sum(abs(float(Fx)) + abs(float(Fy))
+                                 for Fx, Fy in load_nodes.values())
+                _log(f"[STEP0 FAIL] Nodes={len(mesh_nodes)}, Elements={len(mesh_tris)}, "
+                     f"Fixed DOFs={n_fixed_dofs}, ref_nid={ref_nid}, ref_dof={ref_dof}, "
+                     f"Total load={total_load:.4g}")
+                raise RuntimeError(
+                    f"Analysis failed at step 0.\n"
+                    f"  Nodes={len(mesh_nodes)}, Elements={len(mesh_tris)}, "
+                    f"Fixed DOFs={n_fixed_dofs}, ref_nid={ref_nid}, ref_dof={ref_dof}\n"
+                    "  All solver/constraint/algorithm/test combos exhausted.\n"
+                    "Possible causes: insufficient BCs, singular stiffness, bad mesh.")
+
+            # ── Remaining steps ──────────────────────────────────────────────
+            if at == 'LoadControl':
+                incr  = base_incr
+                steps = max(0, int(1. / max(incr, 1e-12)) - 1)
+                for st in range(steps):
+                    ok, cur, alg = _cutback(ops, p, at, ref_nid, ref_dof, incr,
+                                            sys_type=active_sys, constr_type=active_constr)
+                    if ok == 0:
+                        collect(); incr = min(incr, cur)
+                    else:
+                        ok2, alg2, s2, c2 = _step_with_recovery(
+                            ops, p, at, ref_nid, ref_dof, incr, step_num=st+1)
+                        if ok2 == 0:
+                            collect(); active_sys = s2; active_constr = c2
+                        else:
+                            failed = True; fm = f"step {st + 1} alg={alg}"; break
+            else:
+                tgt   = float(p.get('target_disp', 0.05))
+                incr  = base_incr
+                steps = max(0, int(abs(tgt) / max(abs(incr), 1e-12)) - 1)
+                for st in range(steps):
+                    try:
+                        if abs(ops.getTime()) > ml:
+                            failed = True; fm = "load factor cap reached"; break
+                    except: pass
+                    ok, cur, alg = _cutback(ops, p, at, ref_nid, ref_dof, incr,
+                                            sys_type=active_sys, constr_type=active_constr)
+                    if ok == 0:
+                        collect(); incr = min(incr, cur)
+                    else:
+                        ok2, alg2, s2, c2 = _step_with_recovery(
+                            ops, p, at, ref_nid, ref_dof, incr, step_num=st+1)
+                        if ok2 == 0:
+                            collect(); active_sys = s2; active_constr = c2
+                        else:
+                            failed = True; fm = f"step {st + 1} alg={alg}"; break
 
         # Collect last-step nodal displacements
         for nid_str in mesh_nodes:
@@ -3676,11 +4178,14 @@ class WSLWorker(QThread):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("2D RC Panel Analysis  ·  OpenSeesPy")
         self.setMinimumSize(1300, 860)
         self.RUNS_DIR = str(Path.home() / "panel_analysis_runs")
         self._worker  = None
         self._is_windows = sys.platform.startswith("win")
+        self._project_path = None
+        self._dirty = False
+        self._suspend_dirty = False
+        self._recent_files = []
 
         root = QWidget(); self.setCentralWidget(root)
         vl   = QVBoxLayout(root); vl.setContentsMargins(0, 0, 0, 0); vl.setSpacing(0)
@@ -3775,6 +4280,10 @@ class MainWindow(QMainWindow):
         self.btn_save_png.clicked.connect(lambda: self.res._save())
         self.btn_csv.clicked.connect(lambda: self.res._csv())
 
+        self._setup_menu()
+        self._install_dirty_tracking()
+        self._update_window_title()
+
         QTimer.singleShot(900, self.check_wsl)
 
     # ── helpers ───────────────────────────────────────────────────────────────
@@ -3788,6 +4297,222 @@ class MainWindow(QMainWindow):
         p.update(self.crk.get_params())
         p.update(self.anl.get_params())
         return p
+
+    def _setup_menu(self):
+        file_menu = self.menuBar().addMenu("File")
+
+        self.act_new = QAction("New Project", self)
+        self.act_new.setShortcut("Ctrl+N")
+        self.act_open = QAction("Load Project", self)
+        self.act_open.setShortcut("Ctrl+O")
+        self.act_save = QAction("Save Project", self)
+        self.act_save.setShortcut("Ctrl+S")
+        self.act_save_as = QAction("Save Project As", self)
+        self.act_save_as.setShortcut("Ctrl+Shift+S")
+        self.recent_menu = QMenu("Recent Files", self)
+
+        file_menu.addAction(self.act_new)
+        file_menu.addAction(self.act_open)
+        file_menu.addAction(self.act_save)
+        file_menu.addAction(self.act_save_as)
+        file_menu.addMenu(self.recent_menu)
+
+        self.act_new.triggered.connect(self.new_project)
+        self.act_open.triggered.connect(self.load_project)
+        self.act_save.triggered.connect(self.save_project)
+        self.act_save_as.triggered.connect(self.save_project_as)
+        self._refresh_recent_files_menu()
+
+    def _install_dirty_tracking(self):
+        def _connect_spinboxes(parent):
+            for widget in parent.findChildren(QDoubleSpinBox):
+                widget.valueChanged.connect(lambda *_: self._set_dirty(True))
+            for widget in parent.findChildren(QSpinBox):
+                widget.valueChanged.connect(lambda *_: self._set_dirty(True))
+            for widget in parent.findChildren(QLineEdit):
+                widget.textChanged.connect(lambda *_: self._set_dirty(True))
+            for widget in parent.findChildren(QComboBox):
+                widget.currentTextChanged.connect(lambda *_: self._set_dirty(True))
+            for widget in parent.findChildren(QCheckBox):
+                widget.toggled.connect(lambda *_: self._set_dirty(True))
+            for widget in parent.findChildren(QRadioButton):
+                widget.toggled.connect(lambda *_: self._set_dirty(True))
+
+        for parent in [self.geo, self.crk, self.anl, self.run]:
+            _connect_spinboxes(parent)
+        self.crk.tbl.itemChanged.connect(lambda *_: self._set_dirty(True))
+
+    def _update_window_title(self):
+        name = Path(self._project_path).name if self._project_path else "Untitled Project"
+        dirty = " *" if self._dirty else ""
+        self.setWindowTitle(f"2D RC Panel Analysis  ·  OpenSeesPy  ·  {name}{dirty}")
+
+    def _set_dirty(self, dirty=True):
+        if self._suspend_dirty:
+            return
+        self._dirty = bool(dirty)
+        self._update_window_title()
+
+    def _refresh_recent_files_menu(self):
+        self.recent_menu.clear()
+        if not self._recent_files:
+            act = QAction("No recent files", self)
+            act.setEnabled(False)
+            self.recent_menu.addAction(act)
+            return
+        for path in self._recent_files[:5]:
+            act = QAction(path, self)
+            act.triggered.connect(lambda checked=False, p=path: self.load_project(p))
+            self.recent_menu.addAction(act)
+
+    def _add_recent_file(self, path):
+        path = str(Path(path))
+        self._recent_files = [p for p in self._recent_files if p != path]
+        self._recent_files.insert(0, path)
+        self._recent_files = self._recent_files[:5]
+        self._refresh_recent_files_menu()
+        self._save_backend_config()
+
+    def _confirm_discard_changes(self):
+        if not self._dirty:
+            return True
+        ans = QMessageBox.question(
+            self,
+            "Unsaved Changes",
+            "You have unsaved changes. Continue and discard them?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        return ans == QMessageBox.Yes
+
+    def _collect_project_state(self):
+        geo = self.geo.get_params()
+        crk = self.crk.get_params()
+        anl = self.anl.get_params()
+        run_cfg = self.run.get_backend_config()
+        return {
+            "version": PROJECT_FILE_VERSION,
+            "panel": {
+                "W": geo.get("panel_W", 1.0),
+                "H": geo.get("panel_H", 2.0),
+                "t": geo.get("panel_t", 0.2),
+                "Ec": geo.get("panel_Ec", 30000.0),
+                "nu": geo.get("panel_nu", 0.2),
+            },
+            "mesh": {
+                "mode": geo.get("mesh_mode", "divisions"),
+                "nx": geo.get("mesh_nx", 6),
+                "ny": geo.get("mesh_ny", 12),
+                "max_elem_size": geo.get("max_elem_size", 0.2),
+                "max_aspect": geo.get("max_aspect", 2.0),
+                "enable_edge_snap": geo.get("enable_edge_snap", True),
+                "edge_snap_threshold": geo.get("edge_snap_threshold", 0.15),
+                "default_crack_angle_deg": geo.get("default_crack_angle_deg", 0.0),
+            },
+            "crack_ys": geo.get("crack_ys", []),
+            "hand_strokes": geo.get("hand_crack_strokes", []),
+            "hand_crack_defs": geo.get("hand_crack_defs", []),
+            "background_image": geo.get("background_image", ""),
+            "bc_nodes": geo.get("bc_nodes", {}),
+            "load_nodes": geo.get("load_nodes", {}),
+            "crack_materials": crk.get("crack_mat_data", []),
+            "analysis": anl,
+            "wsl_activate": run_cfg.get("activate_cmd", "source ~/ops_env/bin/activate"),
+            "run": run_cfg,
+        }
+
+    def _apply_project_state(self, project_state):
+        panel = project_state.get("panel", {})
+        mesh = project_state.get("mesh", {})
+        flat_geo = {
+            "panel_W": panel.get("W", 1.0),
+            "panel_H": panel.get("H", 2.0),
+            "panel_t": panel.get("t", 0.2),
+            "panel_Ec": panel.get("Ec", 30000.0),
+            "panel_nu": panel.get("nu", 0.2),
+            "mesh_mode": mesh.get("mode", "divisions"),
+            "mesh_nx": mesh.get("nx", 6),
+            "mesh_ny": mesh.get("ny", 12),
+            "max_elem_size": mesh.get("max_elem_size", 0.2),
+            "max_aspect": mesh.get("max_aspect", 2.0),
+            "enable_edge_snap": mesh.get("enable_edge_snap", True),
+            "edge_snap_threshold": mesh.get("edge_snap_threshold", 0.15),
+            "default_crack_angle_deg": mesh.get("default_crack_angle_deg", 0.0),
+            "crack_ys": project_state.get("crack_ys", []),
+            "hand_crack_strokes": project_state.get("hand_strokes", []),
+            "hand_crack_ys": [item.get("y", 0.0) for item in project_state.get("hand_crack_defs", [])],
+            "hand_crack_defs": project_state.get("hand_crack_defs", []),
+            "background_image": project_state.get("background_image", ""),
+            "bc_nodes": project_state.get("bc_nodes", {}),
+            "load_nodes": project_state.get("load_nodes", {}),
+        }
+        self._suspend_dirty = True
+        try:
+            self.geo.set_project_state(flat_geo)
+            self.crk.set_project_state({"crack_mat_data": project_state.get("crack_materials", [])}, self.geo)
+            self.anl.set_project_state(project_state.get("analysis", {}))
+            self.run.apply_backend_config(project_state.get("run", {
+                **self._default_backend_config(),
+                "activate_cmd": project_state.get("wsl_activate", "source ~/ops_env/bin/activate"),
+            }))
+        finally:
+            self._suspend_dirty = False
+        self._set_dirty(False)
+
+    def new_project(self):
+        if not self._confirm_discard_changes():
+            return
+        self._project_path = None
+        self._suspend_dirty = True
+        try:
+            self.geo.reset_project_state()
+            self.crk.reset_project_state()
+            self.anl.reset_project_state()
+            self.run.apply_backend_config(self._default_backend_config())
+        finally:
+            self._suspend_dirty = False
+        self._set_dirty(False)
+
+    def save_project(self):
+        if self._project_path:
+            return self._save_project_to_path(self._project_path)
+        return self.save_project_as()
+
+    def save_project_as(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Save Project", self._project_path or "panel_project.json", "JSON (*.json)")
+        if not path:
+            return False
+        return self._save_project_to_path(path)
+
+    def _save_project_to_path(self, path):
+        try:
+            Path(path).write_text(json.dumps(self._collect_project_state(), indent=2), encoding="utf-8")
+            self._project_path = str(Path(path))
+            self._add_recent_file(self._project_path)
+            self._set_dirty(False)
+            self.statusBar().showMessage(f"Project saved to {self._project_path}")
+            return True
+        except Exception as exc:
+            QMessageBox.warning(self, "Save Failed", str(exc))
+            return False
+
+    def load_project(self, path=None):
+        if not self._confirm_discard_changes():
+            return False
+        if not path:
+            path, _ = QFileDialog.getOpenFileName(self, "Load Project", "", "JSON (*.json)")
+        if not path:
+            return False
+        try:
+            project_state = json.loads(Path(path).read_text(encoding="utf-8"))
+            self._project_path = str(Path(path))
+            self._apply_project_state(project_state)
+            self._add_recent_file(self._project_path)
+            self.statusBar().showMessage(f"Project loaded from {self._project_path}")
+            return True
+        except Exception as exc:
+            QMessageBox.warning(self, "Load Failed", str(exc))
+            return False
 
     def _default_backend_config(self):
         return {
@@ -3804,13 +4529,18 @@ class MainWindow(QMainWindow):
             if APP_CONFIG_FILE.exists():
                 loaded = json.loads(APP_CONFIG_FILE.read_text(encoding="utf-8"))
                 cfg.update(loaded)
+                self._recent_files = [str(Path(p)) for p in loaded.get("recent_files", []) if p]
         except Exception:
             pass
         self.run.apply_backend_config(cfg)
+        if hasattr(self, "recent_menu"):
+            self._refresh_recent_files_menu()
 
     def _save_backend_config(self):
         try:
-            APP_CONFIG_FILE.write_text(json.dumps(self.run.get_backend_config(), indent=2), encoding="utf-8")
+            cfg = self.run.get_backend_config()
+            cfg["recent_files"] = list(self._recent_files[:5])
+            APP_CONFIG_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
         except Exception as exc:
             self.run.append(f"[CONFIG WARN] Could not save {APP_CONFIG_FILE.name}: {exc}")
 
@@ -4006,7 +4736,8 @@ class MainWindow(QMainWindow):
         self.run.append(f"Mesh       : {nn} nodes, {nt} tri, {nc} crack links")
         self.run.append(f"BCs        : {nbc} fixed DOFs    Loads: {nld} loaded nodes")
         self.run.append(f"Analysis   : {p.get('analysis_type')}  "
-                        f"target={p.get('target_disp')}  incr={p.get('disp_incr')}")
+                        f"target={p.get('target_disp')}  incr={p.get('disp_incr')}  "
+                        f"protocol={p.get('loading_protocol', 'monotonic')}")
         backend_name = "WSL" if self._is_windows else "local backend"
         self.run.set_status(f"Running in {backend_name}…")
         self.run.btn_run.setEnabled(False)
@@ -4065,6 +4796,12 @@ class MainWindow(QMainWindow):
             "  Error — see ④ Run tab console. Check activate command and OpenSeesPy install.")
         self.lbl_workflow.setStyleSheet(f"color:{C3};font-size:10px;font-weight:bold;")
         self.statusBar().showMessage("Error — see console.")
+
+    def closeEvent(self, event):
+        if self._confirm_discard_changes():
+            event.accept()
+        else:
+            event.ignore()
 
     def generate_script(self):
         p = self._params()
