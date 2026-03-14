@@ -1,283 +1,169 @@
-# Multi-Surf Crack 2D — User Guide
+# Multi-Surf Crack 2D
 
-A desktop app for analyzing cracked reinforced concrete panels.
-No OpenSees scripting knowledge required.
+Interactive 2D RC panel analysis tool with crack-interface modeling in OpenSeesPy.
 
----
+## What this project does
 
-## What Can I Do With This?
+This project gives you a desktop GUI to run nonlinear panel analysis without manually writing long OpenSees scripts.
 
-If you have a cracked concrete panel — a wall, a beam web, a column,
-or a beam-column joint — this tool lets you:
+You can:
+- define panel geometry and mesh,
+- place crack lines,
+- assign crack material behavior,
+- apply boundary conditions and loads,
+- run analysis,
+- view force-displacement and crack response plots.
 
-- **Draw the crack** on a panel sketch (freehand, by clicking, or by
-  tracing over a photo of the real crack)
-- **Build a mesh** around it automatically
-- **Assign crack material behavior** — choose how the crack resists
-  sliding and opening forces
-- **Apply loads and boundary conditions** by clicking on the mesh
-- **Run a nonlinear analysis** and see how the crack responds
-- **Plot results** — force vs displacement, crack opening, crack slip,
-  deformed shape
-- **Export a Python script** you can run independently
+Main app file: `gui_wsl.py`.
 
----
+## Who this is for
 
-## What Do I Need to Install?
+- students validating panel behavior,
+- researchers testing crack-interface settings,
+- engineers building repeatable study cases.
 
-### On any machine (Windows, Mac, Linux)
+## Quick start
 
-You need:
-
-- **Python 3.10 or 3.11**
-  *(Python 3.12 has known issues with PyQt5 — use 3.10 or 3.11)*
-- **Git** (to clone this repo)
-- The Python packages listed in `requirements.txt`
-
-You do NOT need to compile anything for basic use.
-
----
-
-## How Do I Run It?
-
-### Step 1 — Get the code
+### 1) Clone
 
 ```bash
-git clone <repo-url>
+git clone <your-repo-url>
 cd multi-surf-crack2D
 ```
 
-### Step 2 — Create a Python environment and install packages
+### 2) Create a virtual environment
 
-```bash
-python -m venv .venv
-pip install -r requirements.txt
-```
-
-### Step 3 — Install OpenSeesPy in your environment
-
-```bash
-pip install openseespy
-```
-
-### Step 4 — Launch the GUI
-
-```bash
-python gui_wsl.py
-```
-
-That is all. The GUI will open.
-
----
-
-## Platform-Specific Instructions
-
-### Windows
-
-You have two options:
-
-**Option A — Run everything on Windows directly (simplest)**
+Windows (PowerShell):
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-pip install openseespy
-python gui_wsl.py
 ```
 
-In the GUI **Run tab**, set the activate command to:
-```
-.venv\Scripts\activate
-```
-
-**Option B — GUI on Windows, solver in WSL (recommended for MultiSurfCrack2D)**
-
-1. Install WSL2 with Ubuntu from the Microsoft Store
-2. Open Ubuntu terminal and run:
-
-```bash
-python3 -m venv ~/ops_env
-source ~/ops_env/bin/activate
-pip install openseespy
-```
-
-3. Launch the GUI from Windows as normal (`python gui_wsl.py`)
-4. In the GUI **Run tab**, click **Auto-Detect** — it will find your
-   WSL environment automatically
-
----
-
-### macOS
+Linux/macOS:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
+```
+
+### 3) Install dependencies
+
+```bash
 pip install -r requirements.txt
-pip install openseespy
+```
+
+### 4) Run the GUI
+
+```bash
 python gui_wsl.py
 ```
 
-In the GUI **Run tab**, set the activate command to:
-```
-source .venv/bin/activate
-```
+Windows shortcut:
 
----
-
-### Linux (Ubuntu / Debian)
-
-```bash
-sudo apt update
-sudo apt install -y python3 python3-venv python3-pip
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-pip install openseespy
-python gui_wsl.py
+```powershell
+.\run_gui.bat
 ```
 
-In the GUI **Run tab**, set the activate command to:
-```
-source .venv/bin/activate
-```
+## First run inside the GUI
 
----
+Go to the Run tab and do this once:
 
-## Using the GUI — Step by Step
+1. Click `Auto-Detect`.
+2. Select backend mode (`WSL` or `Local`) based on your machine.
+3. Click `Validate Backend`.
+4. Click `Run Analysis`.
 
-### ① Geometry Tab — Build your panel and draw the crack
+If OpenSeesPy is installed in your local Python (not WSL), choose `Local` backend.
 
-1. Enter your panel **Width**, **Height**, and **Thickness** in meters
-2. Set mesh density with **nx** (horizontal) and **ny** (vertical divisions)
-3. Click **Generate Mesh** — a triangular mesh appears on the canvas
-4. Add a crack line by one of these methods:
-   - Type a Y position (height from base in meters) in the crack field
-   - Click **Crack Mode** then click on the canvas at the crack height
-   - Click **Hand Draw** and drag to sketch the crack freehand
-   - Click **Upload Image** to load a photo and trace the crack on top
-5. Assign boundary conditions:
-   - Click **Fix Bottom** to pin all bottom nodes (typical wall setup)
-   - Or click individual nodes on the canvas and check Fix X / Fix Y
-6. Assign loads:
-   - Click **Uniform Top Load** and enter a total force value, or
-   - Click individual nodes and enter Fx / Fy values directly
+## Typical workflow
 
----
+1. Geometry tab:
+- set panel size and mesh density,
+- add crack lines by typing Y values or using draw mode,
+- assign BCs and loads.
 
-### ② Crack Materials Tab — Choose how each crack behaves
+2. Crack Materials tab:
+- click `Refresh Crack Materials`,
+- choose template material,
+- edit selected crack rows if needed.
 
-1. Click **Refresh from Geometry** to populate the crack element table
-2. Use the **Template** section to set default properties for all cracks
-3. Click any row to override that specific crack element individually
-4. Choose a material type:
+3. Analysis tab:
+- choose `DisplacementControl` or `LoadControl`,
+- set solver and convergence controls.
 
-| Material | What it does | Requires custom build? |
-|---|---|---|
-| `Elastic` | Linear spring | No |
-| `ElasticPPGap` | Elastic until gap opens | No |
-| `EPPGap Macro (4-spring)` | Realistic cyclic crack hysteresis | No — **recommended** |
-| `CustomBilinear` | User-defined curve | No |
-| `MultiSurfCrack2D` | Full plasticity model (Galik et al.) | Yes — see below |
+4. Run tab:
+- validate backend,
+- run analysis,
+- monitor console log.
 
-5. Set **crack width** (mm) and **orientation** (degrees) per element
+5. Results tab:
+- inspect force-displacement,
+- crack opening/slip histories,
+- deformed mesh and contour,
+- export PNG/CSV.
 
----
+## Material models in the GUI
 
-### ③ Analysis Tab — Set up loading
+- `MultiSurfCrack2D`
+- `EPPGap Macro (4-spring)`
+- `Elastic`
+- `ElasticPPGap`
+- `CustomBilinear`
 
-- **Monotonic** — push in one direction to a target displacement
-- **Reversed-Cyclic** — push-pull cycles, like earthquake loading
-- Control method: **DisplacementControl** (recommended) or **LoadControl**
-- Advanced: solver, algorithm, tolerance, max iterations
+When `MultiSurfCrack2D` is not fully available in the runtime environment, the runner falls back to a stable interface model so the run can continue.
 
----
+## Can others clone and run it?
 
-### ④ Run Tab — Run the analysis
+Yes.
 
-1. Click **Auto-Detect** to find your OpenSeesPy installation
-2. Click **Validate Backend** to confirm it works
-3. Click **▶ Run Analysis**
-4. Watch live output in the console
-5. Errors are shown with exact messages if something goes wrong
+Most users only need:
+- Python 3.10+,
+- `pip install -r requirements.txt`,
+- backend setup in the Run tab.
 
----
+They do not need to compile custom code for normal GUI use.
 
-### ⑤ Results Tab — View what happened
+## Do users need `build_msc2d.sh`?
 
-- **Force vs Displacement** — overall panel response
-- **Crack Opening (w)** — how each crack opened over load steps
-- **Crack Slip (s)** — how each crack slid over load steps
-- **Deformed Mesh** — visual of panel deformation
-- **Contour Plot** — displacement or stress field
-- **Click any crack marker** on the canvas → full response history popup
-- **Save PNG** or **Export CSV** from the toolbar
+Usually no.
 
----
+`build_msc2d.sh` is only needed if someone specifically wants to compile custom `MultiSurfCrack2D` integration in their own OpenSees build.
 
-### ⑥ Script Tab — Get the OpenSeesPy script
+## Work on this project (for contributors)
 
-- View the full generated Python script for your model
-- **Copy** to clipboard or **Save** as a `.py` file
-- The saved script runs independently on any machine with OpenSeesPy
+### Recommended dev flow
 
----
+1. Create a branch.
+2. Make small focused changes.
+3. Run the GUI and test one analysis case.
+4. Keep docs updated when behavior changes.
 
-## Do I Need to Compile Anything?
+### Important files
 
-**No — for most users.**
-
-`pip install openseespy` gives you everything needed for `Elastic`,
-`ElasticPPGap`, `EPPGap Macro (4-spring)`, and `CustomBilinear`.
-
-**Only if you need `MultiSurfCrack2D`:**
-
-```bash
-bash build_msc2d.sh
-```
-
-This compiles the custom material into OpenSees from source.
-Requires WSL on Windows, or Linux/macOS terminal.
-See `SETUP_FOR_COLLABORATORS.md` for full instructions.
-
-> If `MultiSurfCrack2D` is selected but not available, the runner
-> automatically falls back to `EPPGap Macro` so your run still completes.
-
----
-
-## Where Are My Files?
-
-| What | Where |
-|---|---|
-| Analysis runs | `~/panel_analysis_runs/run_YYYYMMDD_HHMMSS/` |
-| Backend settings | `panel_gui_config.json` (project folder, not tracked by git) |
-| Exported scripts | Your choice via Save dialog |
-| Exported plots / CSV | Your choice via Save dialog |
-
----
+- `gui_wsl.py`: main GUI and embedded runner logic
+- `panel_analysis.py`: standalone analysis helper
+- `multi-surf-crack2d.cpp` / `multi-surf-crack2d.h`: custom material source
+- `SETUP_FOR_COLLABORATORS.md`: minimal setup handoff guide
+- `PROJECT_DOCUMENTATION.md`: project-level technical summary
 
 ## Troubleshooting
 
-**GUI does not open**
-→ Check Python version (`python --version`) — must be 3.10 or 3.11
-→ Check PyQt5 is installed: `pip show PyQt5`
+If analysis does not start:
 
-**"No module named openseespy"**
-→ Run `pip install openseespy` in the same environment as the GUI
+1. Check backend mode in Run tab.
+2. Validate backend again.
+3. Confirm OpenSeesPy is installed in the selected environment.
+4. Review the run console and `run.log` in the run folder.
 
-**Analysis fails immediately**
-→ Run tab → click **Validate Backend** and check the error message
-→ Make sure the activate command matches your environment path
+If crack plots are flat or empty:
 
-**"MultiSurfCrack2D is unknown"**
-→ Your OpenSees does not have the custom material
-→ Switch to `EPPGap Macro (4-spring)` for the same run, or
-→ Follow the build instructions in `SETUP_FOR_COLLABORATORS.md`
+1. Ensure crack lines exist in Geometry.
+2. Regenerate mesh after crack edits.
+3. Click `Refresh Crack Materials`.
+4. Rerun analysis.
 
-**Analysis runs but does not converge**
-→ Reduce displacement increment in the Analysis tab
-→ Switch algorithm to KrylovNewton
-→ Reduce total load magnitude
+## Related docs
 
-
-
+- `SETUP_FOR_COLLABORATORS.md`
+- `PROJECT_DOCUMENTATION.md`

@@ -1,80 +1,95 @@
 # Project Documentation
 
-## Overview
+## What This Project Is
 
-This project is an interactive finite element analysis tool for 2D reinforced concrete panels with explicit crack interfaces. It combines:
-- A desktop GUI (`PyQt5`)
-- Numerical model generation and post-processing (`NumPy`, `Matplotlib`)
-- Nonlinear structural analysis (`OpenSeesPy`)
+This project is a desktop tool for 2D reinforced concrete panel analysis with explicit crack interfaces.
 
-Main entry point: `gui_wsl.py`
+In practical terms, it helps you:
+- create a panel model,
+- place crack lines,
+- assign crack material behavior,
+- run nonlinear OpenSeesPy analysis,
+- and visualize force-displacement and crack response results.
 
-## Engineering Scope
+Main application file: `gui_wsl.py`.
 
-The tool models a panel under plane stress using a structured triangular mesh. Crack lines are represented by duplicated node rows connected by zero-length interfaces. This allows independent evaluation of:
-- Crack opening (normal direction)
-- Crack slip (tangential direction)
+## Main Idea
 
-Supported crack material templates in the GUI:
-- `MultiSurfCrack2D` (custom model option)
+The panel body is modeled with `tri31` plane-stress triangles.
+Each crack line is represented by duplicated node rows connected with zero-length interface elements.
+
+This lets the model track two crack responses separately:
+- opening (normal direction),
+- slip (tangential direction).
+
+## Technology Stack
+
+- GUI: `PyQt5`
+- Computation and plotting: `NumPy`, `Matplotlib`
+- Nonlinear solver: `OpenSeesPy`
+- Data exchange: `JSON` for inputs and `NPZ` for outputs
+
+## Supported Crack Material Options
+
+The GUI supports multiple interface models:
+- `MultiSurfCrack2D` (custom integration path)
 - `Elastic`
 - `ElasticPPGap`
 - `CustomBilinear`
+- `EPPGap Macro (4-spring)` fallback behavior when needed
 
-## Core Logic
+## How a Run Works (End to End)
 
-1. Mesh generation
-- Builds a structured `(nx, ny)` grid
-- Splits each rectangle into two triangles
-- Duplicates row nodes at crack Y locations to create interface pairs
+1. You define geometry, mesh, cracks, BCs, loads, and analysis settings in the GUI.
+2. The GUI writes a run folder with `params.json` and `runner.py`.
+3. The backend executes `runner.py` in the selected environment.
+4. The solver writes `results.npz` and `run.log`.
+5. The GUI reads those results and updates plots in the Results tab.
 
-2. Boundary conditions and loading
-- Interactive node-level BC assignment
-- Interactive node-level loading
-- Quick actions for common patterns (fix bottom, uniform top load)
+## Reliability Features
 
-3. Solver pipeline
-- GUI writes `params.json`
-- GUI writes runner script (`runner.py`) from embedded `RUNNER_PY`
-- Backend executes analysis and writes `results.npz`
-- GUI reloads and plots results
+The analysis runner includes several safety layers:
+- solver/algorithm fallback sequences,
+- recovery attempts with multiple test/system/constraint combinations,
+- step cutback when a step does not converge,
+- detailed run logs for troubleshooting.
 
-4. Nonlinear solution robustness
-- Algorithm fallback sequence
-- Constraints/system/test fallback combinations
-- Step cutback when convergence fails
-- Detailed run log written to `run.log`
+Recent reliability improvements include safer crack-Y parsing, better material-row refresh behavior, and corrected self-test/recovery flow.
 
-## Recent Logic Improvements
+## Output Data You Get
 
-The current `gui_wsl.py` includes key reliability fixes:
-- Safe crack Y parsing with boundary filtering and near-duplicate cleanup
-- Correct preservation of edited crack-material rows during refresh
-- Correct OpenSees self-test sequence (`integrator` then static `analysis`)
-- Recovery-loop fix to fully execute configured test combinations
-- Cross-platform backend support:
-  - Windows: WSL backend
-  - Linux/macOS: local bash backend
+Each completed run can provide:
+- force-displacement history,
+- crack opening history,
+- crack slip history,
+- deformed mesh,
+- displacement contour,
+- crack hysteresis and overlay views,
+- CSV/PNG exports.
 
-## Outputs
+## File Guide
 
-Main analysis outputs include:
-- Global force-displacement history
-- Crack opening/slip histories per crack line
-- Final nodal displacement field
-- Deformed mesh and displacement contour visualization
-- Exported CSV and image plots
+- `gui_wsl.py`: full GUI, runner template, worker logic, results plotting
+- `panel_analysis.py`: standalone analysis script helper
+- `multi-surf-crack2d.cpp` and `multi-surf-crack2d.h`: custom material source code
+- `build_msc2d.sh`: optional custom build helper
+- `run_gui.bat`: Windows launcher
+- `README.md`: setup and usage guide
+- `SETUP_FOR_COLLABORATORS.md`: quick handoff instructions
 
-## File Roles
+## Platform Notes
 
-- `gui_wsl.py`: Full GUI + embedded solver runner
-- `multi-surf-crack2d.cpp/.h`: Custom material source for OpenSees build integration
-- `build_msc2d.sh`: WSL build helper for OpenSees + custom material
-- `run_gui.bat`: Windows convenience launcher
-- `README.md`: Setup and run instructions for Windows/Linux/macOS
+- Windows users can run with WSL backend or local Python backend.
+- Linux/macOS users can run local backend.
+- Backend selection is configured from the Run tab and can be auto-detected/validated.
 
-## Limitations and Assumptions
+## Scope and Limitations
 
-- Primary crack insertion workflow is horizontal crack lines.
-- OpenSees behavior depends on the available build features in the user environment.
-- The GUI is intended for research/prototyping workflows and should be validated against benchmark problems before production decisions.
+- Crack insertion workflow is currently focused on horizontal crack rows.
+- Some advanced material behavior depends on OpenSees build capabilities in the runtime environment.
+- This tool is intended for research and engineering study. Validate against benchmark or reference cases before production-critical decisions.
+
+## Handoff Summary
+
+For normal use, collaborators can clone, install dependencies, select a working backend, and run.
+`build_msc2d.sh` is only needed when a collaborator specifically wants to compile custom `MultiSurfCrack2D` integration on their own machine.

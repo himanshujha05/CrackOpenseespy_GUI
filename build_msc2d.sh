@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# =============================================================================
+
 # build_msc2d.sh  —  Build OpenSeesPy with MultiSurfCrack2D for WSL/Ubuntu
-# =============================================================================
+
 # Tested on: Ubuntu 24.04 LTS, Python 3.12, WSL2
 # Usage (from WSL terminal):
 #   bash /mnt/c/Users/himan/multi-surf-crack2D/build_msc2d.sh
@@ -14,10 +14,10 @@
 #   5. Builds the OpenSeesPy shared library (~20-40 min on 4 cores)
 #   6. Installs into ~/ops_env
 #   7. Runs a quick smoke-test
-# =============================================================================
+
 set -euo pipefail
 
-# ── Config ──────────────────────────────────────────────────────────────────
+# Config 
 OPENSEES_TAG="v3.7.1"
 BUILD_ROOT="$HOME/opensees_msc2d_build"
 VENV="$HOME/ops_env"
@@ -25,7 +25,7 @@ WIN_SRC="/mnt/c/Users/himan/multi-surf-crack2D"
 JOBS=$(nproc 2>/dev/null || echo 4)
 PYTHON_EXE="$VENV/bin/python3"
 
-# ── Helpers ─────────────────────────────────────────────────────────────────
+#Helpers 
 info()  { printf '\033[1;34m[INFO]\033[0m  %s\n' "$*"; }
 ok()    { printf '\033[1;32m[ OK ]\033[0m  %s\n' "$*"; }
 warn()  { printf '\033[1;33m[WARN]\033[0m  %s\n' "$*"; }
@@ -39,7 +39,7 @@ info "Virtual env : $VENV"
 info "Cores       : $JOBS"
 sep
 
-# ── 1. Build dependencies ───────────────────────────────────────────────────
+#  1. Build dependencies
 info "Installing build dependencies (may need sudo password)..."
 sudo apt-get update -qq
 sudo apt-get install -y -qq \
@@ -244,7 +244,7 @@ PYEOF
     fi
 fi
 
-# ── 7. Configure cmake ───────────────────────────────────────────────────────
+# ─ 7. Configure cmake
 sep
 info "Configuring cmake..."
 mkdir -p "$BUILD_ROOT/build"
@@ -260,7 +260,7 @@ cmake "$BUILD_ROOT/OpenSees" \
 
 ok "cmake configured."
 
-# ── 8. Build ─────────────────────────────────────────────────────────────────
+#  8. Build
 sep
 info "Building OpenSeesPy with $JOBS parallel jobs..."
 info "(This typically takes 20-40 minutes. Go get a coffee.)"
@@ -273,7 +273,7 @@ SO=$(find "$BUILD_ROOT/build" \
 [ -n "$SO" ] || die "Build failed — no .so produced. See $BUILD_ROOT/build.log"
 ok "Build succeeded: $SO"
 
-# ── 9. Install into venv ─────────────────────────────────────────────────────
+# ── 9. Install into venv
 sep
 info "Installing into $VENV ..."
 

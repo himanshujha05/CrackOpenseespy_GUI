@@ -1,40 +1,61 @@
 # Collaborator Setup Guide
 
-## Goal
-Run the GUI and analysis after cloning this repository, with minimum setup effort.
+## Quick goal
+Clone the project, install dependencies, and run the GUI.
 
-## What collaborators need
-- Python 3.10+
-- OpenSeesPy installed in the solver environment
-- This repository cloned locally
+## What you need
+- Python 3.10 or newer
+- OpenSeesPy available in your solver environment
 
-## Fast setup
+## 1) Clone the project
+```bash
+git clone <repo-url>
+cd multi-surf-crack2D
+```
+
+## 2) Create and activate a virtual environment
+
+### Windows (PowerShell)
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+### Linux/macOS
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
+```
+
+## 3) Install packages
+```bash
 pip install -r requirements.txt
+```
+
+## 4) Start the GUI
+```bash
 python gui_wsl.py
 ```
 
-## Backend modes
-- Windows: GUI can call WSL backend from the Run tab.
-- Linux/macOS: GUI can run local backend from the Run tab.
-
-Set the Run tab activate command to match the solver environment, for example:
-- `source ~/ops_env/bin/activate`
-- `source .venv/bin/activate`
-- `conda activate opensees`
-
-## Custom material build (only if required)
-If you must use custom `MultiSurfCrack2D` inside OpenSees, build on the target machine:
-```bash
-bash build_msc2d.sh
+On Windows, you can also run:
+```powershell
+.\run_gui.bat
 ```
 
-For cracks set to `MultiSurfCrack2D`, the runner first attempts true `zeroLengthND` usage.
-If that link path is not compatible in the target environment, it uses a stable fallback interface model.
+## 5) First run setup (important)
+Open the Run tab in the GUI and do this once:
+1. Click Auto-Detect.
+2. Select a working backend (WSL or local).
+3. Click Validate Backend.
+4. Run Analysis.
 
-## Notes for sharing with professor
-- Share source code, not compiled `.so/.pyd` binaries.
-- Compiled OpenSees binaries are platform and Python-version specific.
-- For repeatable runs, also share the parameter JSON used in the paper case.
+If OpenSeesPy is installed locally (not in WSL), choose local backend.
+
+## Do you need `build_msc2d.sh`?
+Most users: no.
+
+You only need `build_msc2d.sh` if you specifically want to compile and use custom `MultiSurfCrack2D` integration in your own OpenSees build.
+
+## Share-ready note
+When sharing this project, share source code and docs.
+Do not share compiled `.so` or `.pyd` binaries across machines because they are platform and Python-version specific.
