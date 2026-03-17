@@ -625,7 +625,7 @@ class PanelMeshCanvas(QWidget):
             path.lineTo(*coords[2]); path.closeSubpath()
             p.drawPath(path)
 
-        # Crack lines (red thick)
+        # Crack lines (red thick) + edge-snap indicator
         if self.crack_pairs:
             by_y = {}
             for cp in self.crack_pairs:
@@ -634,19 +634,30 @@ class PanelMeshCanvas(QWidget):
             for y, xs in sorted(by_y.items()):
                 xs_s = sorted(xs)
                 if len(xs_s) >= 2:
-                    p.drawLine(*self._to_px(xs_s[0], y), *self._to_px(xs_s[-1], y))
+                    xL_px, yp = self._to_px(xs_s[0], y)
+                    xR_px, _ = self._to_px(xs_s[-1], y)
+                    p.drawLine(xL_px, yp, xR_px, yp)
+                    # Edge-snapped indicator
+                    if (abs(y) < 0.05 * self.panel_H or
+                            abs(y - self.panel_H) < 0.05 * self.panel_H):
+                        p.setPen(QPen(QColor(C4), 1))
+                        p.setFont(QFont("Consolas", 8))
+                        p.drawText(xR_px + 4, yp - 4, "EDGE-SNAPPED")
+                        p.setPen(QPen(QColor(C3), 3))
 
-        # Crack links: short lines between each (below, above) pair
-        # Drawn as small "X" marks to show the interface connection
+        # Crack interface elements: perpendicular tick marks at each crack node
+        # (zero-length elements between coincident nodes are invisible as lines)
         if self.show_crack_links and self.crack_pairs:
-            p.setPen(QPen(QColor("#ff5555"), 1.5))
+            tick_len_px = 8
+            pen_crack = QPen(QColor("#ff6b35"), 2)
+            p.setPen(pen_crack)
             for cp in self.crack_pairs:
                 nb, na = cp[0], cp[1]
                 if nb in self.nodes and na in self.nodes:
-                    px1, py1 = self._to_px(*self.nodes[nb])
-                    # Offset the above node marker slightly upward to show pair
-                    p.drawLine(px1 - 3, py1 - 3, px1 + 3, py1 + 3)
-                    p.drawLine(px1 - 3, py1 + 3, px1 + 3, py1 - 3)
+                    xc, yc = cp[3] if len(cp) > 3 else self.nodes[nb][0], cp[2]
+                    px_c, py_c = self._to_px(float(xc), float(yc))
+                    p.drawLine(px_c, py_c - tick_len_px, px_c, py_c + tick_len_px)
+                    p.drawLine(px_c - 3, py_c, px_c + 3, py_c)
 
         if self._highlighted_pairs:
             p.setPen(QPen(QColor("#ffd54f"), 2.5))
@@ -764,6 +775,7 @@ class PanelMeshCanvas(QWidget):
             ("●", C1, "Node"), ("●", C2, "Selected"),
             ("●", C4, "Fixed BC"), ("●", C3, "Loaded"),
             ("●", CRACK_BELOW, "Crack ↓"), ("●", CRACK_ABOVE, "Crack ↑"),
+            ("╋", "#ff6b35", "Interface Elem"),
         ]
         lx_ = W - 120
         for i, (sym, col, txt) in enumerate(legend):
@@ -1082,6 +1094,46 @@ class GeometryTab(QWidget):
         self.tbl_loads.setMaximumHeight(70)
         vld.addWidget(self.tbl_loads)
         lv.addWidget(grp_load)
+
+        # Coupled Load (gamma ratio)
+        grp_coupled = QGroupBox("Coupled Load (Shear-to-Normal Ratio)")
+        fc_c = QFormLayout(grp_coupled); fc_c.setSpacing(6)
+        self.chk_use_gamma = QCheckBox("Use gamma-coupled load mode")
+        self.sb_gamma = dsb(1.0, -10., 10., 3, 0.1,
+            tip="Load ratio gamma = V / N. Fy = N (normal), Fx = gamma*N (shear).\n"
+                "gamma=0: pure normal. gamma=1: equal shear and normal.")
+        self.sb_N_total = dsb(-100.0, -1e6, 1e6, 1, 10.,
+            tip="Total normal force N (kN) applied to top nodes. Negative = compression.")
+        self.btn_apply_coupled = QPushButton("Apply Coupled Load")
+        self.btn_apply_coupled.setObjectName("amber")
+        fc_c.addRow(self.chk_use_gamma)
+        fc_c.addRow("gamma (shear ratio):", self.sb_gamma)
+        fc_c.addRow("N total (kN):", self.sb_N_total)
+        fc_c.addRow(self.btn_apply_coupled)
+        lv.addWidget(grp_coupled)
+        self.btn_apply_coupled.clicked.connect(self._apply_coupled_load)
+
+        # Reinforcement (Crossing Cracks)
+        grp_rebar = QGroupBox("Reinforcement (Crossing Cracks)")
+        fr = QFormLayout(grp_rebar); fr.setSpacing(6)
+        self.sb_rho_s = dsb(0.01, 0.0, 1.0, 4, 0.001,
+            tip="Reinforcement ratio rho_s = As/Ac. Typical: 0.005-0.05")
+        self.sb_Es = dsb(200000.0, 1., 1e8, 0, 1000.,
+            tip="Steel elastic modulus Es (MPa). Typical: 200,000 MPa")
+        self.sb_Lunb = dsb(0.05, 0.0, 10., 4, 0.01,
+            tip="Unbonded length L_unb (m)")
+        self.btn_push_rebar = QPushButton("Push to Crack Materials")
+        self.btn_push_rebar.setObjectName("flat")
+        self.btn_push_rebar.setToolTip(
+            "Store rebar params for use in MultiSurfCrack2D rows.")
+        fr.addRow("rho_s (ratio):", self.sb_rho_s)
+        fr.addRow("Es (MPa):", self.sb_Es)
+        fr.addRow("L_unb (m):", self.sb_Lunb)
+        fr.addRow(self.btn_push_rebar)
+        lv.addWidget(grp_rebar)
+        self.btn_push_rebar.clicked.connect(self._push_rebar_to_materials)
+        self._rebar_params = {}
+
         lv.addStretch()
 
         scroll.setWidget(left)
@@ -1461,6 +1513,16 @@ class GeometryTab(QWidget):
             f"{len(self._crack_ys)} crack line(s).")
         self.lbl_mesh_preview.setText(mesh_preview_text(W, H, nx, ny))
         self.lbl_edge_snap.setText("\n".join(snap_messages) if snap_messages else "")
+        # Aspect ratio feedback
+        dx = W / max(nx, 1); dy = H / max(ny, 1)
+        ar = max(dx / max(dy, 1e-9), dy / max(dx, 1e-9))
+        max_ar = self.sb_max_aspect.value()
+        if ar > max_ar:
+            QMessageBox.warning(self, "Mesh Quality Warning",
+                f"Element aspect ratio = {ar:.2f} exceeds the threshold of {max_ar:.1f}.\n\n"
+                f"dx = {dx:.4f} m,  dy = {dy:.4f} m\n\n"
+                f"Consider adjusting nx or ny to reduce aspect ratio below {max_ar:.1f}.\n"
+                f"Poor aspect ratios reduce solver accuracy and convergence.")
         self._update_bc_table(); self._update_load_table()
 
     def _on_node_clicked(self, nid):
@@ -1543,6 +1605,41 @@ class GeometryTab(QWidget):
     def _clear_all_loads(self):
         self._load_nodes.clear()
         self.canvas.set_load_nodes(self._load_nodes); self._update_load_table()
+
+    def _apply_coupled_load(self):
+        if self._mesh_data is None:
+            QMessageBox.warning(self, "No Mesh", "Generate mesh first.")
+            return
+        H = self._mesh_data["H"]
+        top_nodes = [nid for nid, (x, y) in self._mesh_data["nodes"].items()
+                     if abs(y - H) < 1e-8]
+        if not top_nodes:
+            QMessageBox.warning(self, "No Top Nodes", "No nodes found at top edge.")
+            return
+        N_total = self.sb_N_total.value()
+        gamma = self.sb_gamma.value()
+        n = len(top_nodes)
+        Fy_each = N_total / n
+        Fx_each = gamma * N_total / n
+        self._load_nodes.clear()
+        for nid in top_nodes:
+            self._load_nodes[nid] = (Fx_each, Fy_each)
+        self.canvas.set_load_nodes(self._load_nodes)
+        self._update_load_table()
+        QMessageBox.information(self, "Coupled Load Applied",
+            f"Applied to {n} top nodes:\n"
+            f"  Fy = {Fy_each:.3f} kN/node  (normal, N={N_total:.1f} kN)\n"
+            f"  Fx = {Fx_each:.3f} kN/node  (shear, gamma={gamma:.2f})")
+
+    def _push_rebar_to_materials(self):
+        """Store reinforcement geometry params for retrieval by MainWindow."""
+        rho_s = self.sb_rho_s.value()
+        Es = self.sb_Es.value()
+        Lunb = self.sb_Lunb.value()
+        self._rebar_params = {"rho_s": rho_s, "Es": Es, "Lunb": Lunb}
+        QMessageBox.information(self, "Rebar Params Stored",
+            f"rho_s={rho_s:.4f}, Es={Es:.0f} MPa, L_unb={Lunb:.4f} m\n\n"
+            "Click 'Refresh Crack Materials' to apply to MultiSurfCrack2D rows.")
 
     def _update_bc_table(self):
         self.tbl_bc.setRowCount(len(self._bc_nodes))
@@ -1887,14 +1984,15 @@ class CrackMaterialTab(QWidget):
 
         mat_items = [
             "MultiSurfCrack2D", "EPPGap Macro (4-spring)",
-            "Elastic", "ElasticPPGap", "CustomBilinear",
+            "Elastic", "ElasticPPGap", "CustomBilinear", "SimpleSpring",
         ]
         mat_tip = (
             "MultiSurfCrack2D: plasticity-based multi-yield-surface crack model (the reference paper)\n"
             "EPPGap Macro (4-spring): 4 parallel ElasticPPGap shear springs + 1 elastic normal spring\n"
             "Elastic: linear spring (kn/kt)\n"
             "ElasticPPGap: elastic + perfect plastic gap spring\n"
-            "CustomBilinear: piecewise linear force-displacement"
+            "CustomBilinear: piecewise linear force-displacement\n"
+            "SimpleSpring: bilinear Kn/Ks spring (Calvi 2015 validation)"
         )
 
         # Template group box
@@ -1988,6 +2086,37 @@ class CrackMaterialTab(QWidget):
         self.lbl_eppgap_info.setWordWrap(True)
         self.lbl_eppgap_info.setVisible(False)
         outer.addWidget(self.lbl_eppgap_info)
+
+        # SimpleSpring group (Calvi validation material)
+        self.grp_spring = QGroupBox("Simple Spring (Kn / Ks)")
+        self.grp_spring.setVisible(False)
+        fm_sp = QFormLayout(self.grp_spring)
+        fm_sp.setContentsMargins(12, 12, 12, 12)
+        fm_sp.setHorizontalSpacing(16); fm_sp.setVerticalSpacing(8)
+        fm_sp.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        fm_sp.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+        self.sb_sp_Kn = _make_dsb(500.0, 0.0, 1e9, 2, 10.0,
+            tip="Normal stiffness Kn (MPa/mm) — resistance to crack opening")
+        self.sb_sp_Ks = _make_dsb(200.0, 0.0, 1e9, 2, 10.0,
+            tip="Shear (tangential) stiffness Ks (MPa/mm) — resistance to crack slip")
+        self.sb_sp_gap = _make_dsb(0.0, -10., 0., 4, 0.001,
+            tip="Compression gap (m) — crack closes at this opening. 0 = no gap")
+        self.sb_sp_w0 = _make_dsb(0.0, 0.0, 50., 4, 0.01,
+            tip="Initial crack width w0 (mm) — pre-existing crack opening")
+
+        fm_sp.addRow("Kn (MPa/mm):", self.sb_sp_Kn)
+        fm_sp.addRow("Ks (MPa/mm):", self.sb_sp_Ks)
+        fm_sp.addRow("Gap (m):", self.sb_sp_gap)
+        fm_sp.addRow("w0 (mm):", self.sb_sp_w0)
+
+        lbl_spring_note = mk_lbl(
+            "Simple bilinear spring — suitable for Calvi 2015 validation.\n"
+            "Use MultiSurfCrack2D for full cyclic behavior.", "sub")
+        lbl_spring_note.setWordWrap(True)
+        fm_sp.addRow(lbl_spring_note)
+        self.grp_spring.setLayout(fm_sp)
+        outer.addWidget(self.grp_spring)
 
         # MultiSurfCrack2D parameter editor
         self.grp_msc2d = QGroupBox("MultiSurfCrack2D Parameters")
@@ -2088,10 +2217,10 @@ class CrackMaterialTab(QWidget):
         vt.addWidget(mk_lbl(
             "Each row is one interface element between two duplicated crack nodes.\n"
             "Selecting rows highlights those elements on the Geometry canvas in yellow.", "sub"))
-        self.tbl = QTableWidget(0, 10)
+        self.tbl = QTableWidget(0, 11)
         self.tbl.setHorizontalHeaderLabels([
             "Elem", "Y pos (m)", "X pos (m)", "Width (m)", "Orient (deg)",
-            "Material", "kn (kN/m)", "kt (kN/m)", "gap (m)", "eta"
+            "Material", "kn (kN/m)", "kt (kN/m)", "gap (m)", "eta", "theta (rad)"
         ])
         self.tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -2146,10 +2275,14 @@ class CrackMaterialTab(QWidget):
     def _reset_msc2d_defaults(self):
         self._set_msc2d_widgets(self._msc2d_defaults)
 
+    def _is_simple_spring_type(self, mat_type):
+        return "simplespring" in str(mat_type or "").strip().lower().replace(" ", "")
+
     def _update_material_type_visibility(self, mat_type=None):
         mt = mat_type if mat_type is not None else self.cmb_mat_sel.currentText()
         self.grp_msc2d.setVisible(self._is_msc2d_type(mt))
         self.lbl_eppgap_info.setVisible(self._is_eppgap_macro_type(mt))
+        self.grp_spring.setVisible(self._is_simple_spring_type(mt))
 
     def _set_msc2d_defaults_template_all(self):
         """
@@ -2177,6 +2310,9 @@ class CrackMaterialTab(QWidget):
         )
         if self._is_msc2d_type(vals["mat_type"]):
             vals.update(self._msc2d_values_from_widgets())
+        if self._is_simple_spring_type(vals["mat_type"]):
+            vals.update({"sp_Kn": self.sb_sp_Kn.value(), "sp_Ks": self.sb_sp_Ks.value(),
+                         "sp_gap": self.sb_sp_gap.value(), "sp_w0": self.sb_sp_w0.value()})
         return vals
 
     def _editor_values(self):
@@ -2190,6 +2326,9 @@ class CrackMaterialTab(QWidget):
         )
         if self._is_msc2d_type(vals["mat_type"]):
             vals.update(self._msc2d_values_from_widgets())
+        if self._is_simple_spring_type(vals["mat_type"]):
+            vals.update({"sp_Kn": self.sb_sp_Kn.value(), "sp_Ks": self.sb_sp_Ks.value(),
+                         "sp_gap": self.sb_sp_gap.value(), "sp_w0": self.sb_sp_w0.value()})
         return vals
 
     def _selected_rows(self):
@@ -2227,6 +2366,7 @@ class CrackMaterialTab(QWidget):
             msc_vals[key] = int(vals.get(key, src.get(key, default))) if key == "msc_cPath" \
                             else float(vals.get(key, src.get(key, default)))
         meta["msc2d"] = msc_vals
+        theta_rad = float(vals.get("theta_rad", math.radians(vals.get("orientation_deg", 0.0))))
         cells = [
             str(int(vals["element_index"])),
             f"{vals['y']:.4f}", f"{vals['x']:.4f}",
@@ -2234,6 +2374,7 @@ class CrackMaterialTab(QWidget):
             vals["mat_type"],
             f"{vals['kn']:.3f}", f"{vals['kt']:.3f}",
             f"{vals['gap']:.4f}", f"{vals['eta']:.3f}",
+            f"{theta_rad:.4f}",
         ]
         for col, text in enumerate(cells):
             item = self.tbl.item(row, col)
@@ -2263,6 +2404,8 @@ class CrackMaterialTab(QWidget):
        
         meta = self._row_meta(row)
         pair_key = tuple(meta.get("pair_key", (0, 0)))
+        theta_item = self.tbl.item(row, 10)
+        theta_rad = float(theta_item.text()) if theta_item and theta_item.text() else 0.0
         vals = dict(
             element_index=int(float(self.tbl.item(row, 0).text())),
             y=float(self.tbl.item(row, 1).text()),
@@ -2274,6 +2417,7 @@ class CrackMaterialTab(QWidget):
             kt=float(self.tbl.item(row, 7).text()),
             gap=float(self.tbl.item(row, 8).text()),
             eta=float(self.tbl.item(row, 9).text()),
+            theta_rad=theta_rad,
             below_node=int(pair_key[0]),
             above_node=int(pair_key[1]),
         )
@@ -2811,6 +2955,39 @@ class CrackResponseDialog(QDialog):
         lay.addWidget(canv, stretch=1)
 
 
+class BodyElementDialog(QDialog):
+    """Pop-up showing stress history for a selected triangular body element."""
+    def __init__(self, eid, stress_history, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Body Element {eid} — Stress History")
+        self.resize(960, 480)
+        lay = QVBoxLayout(self)
+        lay.addWidget(mk_lbl(f"Element {eid}  |  tri31 PlaneStress — Stress vs Load Step", "sub"))
+
+        fig = Figure(facecolor=BG_DEEP, tight_layout=True)
+        axes = [fig.add_subplot(1, 3, i + 1) for i in range(3)]
+        titles = ["sxx vs Step", "syy vs Step", "txy vs Step"]
+        colors = [C1, C2, C3]
+        steps = np.arange(len(stress_history))
+
+        for ax, col, title, idx in zip(axes, colors, titles, range(3)):
+            ax.set_facecolor(BG_PANEL)
+            ax.tick_params(colors=TXTS, labelsize=9)
+            for spine in ax.spines.values():
+                spine.set_edgecolor(BORDER)
+            ax.grid(True, alpha=0.15, color=BORDER, linestyle="--")
+            ax.set_title(title, color=C1, fontsize=10)
+            ax.set_xlabel("Step", color=TXT, fontsize=9)
+            ax.set_ylabel("Stress (MPa)", color=TXT, fontsize=9)
+            vals = [s[idx] if not np.isnan(s[idx]) else 0.0 for s in stress_history]
+            ax.plot(steps, vals, color=col, lw=1.8)
+
+        canv = FigureCanvas(fig)
+        lay.addWidget(canv, stretch=1)
+        btn = QPushButton("Close")
+        btn.clicked.connect(self.accept)
+        lay.addWidget(btn)
+
 
 # results tab — charts, contours, and crack response plots
 
@@ -2912,9 +3089,11 @@ class ResultsTab(QWidget):
         self._hand_strokes = []
         self._hand_ys      = []
         self._element_responses = []
+        self._elem_stress_keys = np.array([], dtype=np.int32)
+        self._elem_stress_vals = np.array([])
 
     def set_results(self, r):
-        
+
         self._disp  = r["disp"]; self._force = r["force"]
         self._crack_pos = r.get("crack_positions", np.array([]))
         self._co    = r.get("crack_openings", [])
@@ -2925,6 +3104,8 @@ class ResultsTab(QWidget):
         self._node_disp_last = r.get("node_disp_last", {})
         self._hand_strokes   = r.get("hand_crack_strokes", [])
         self._hand_ys        = r.get("hand_crack_ys", [])
+        self._elem_stress_keys = r.get("esh_keys", np.array([], dtype=np.int32))
+        self._elem_stress_vals = r.get("esh_vals", np.array([]))
         # Update step slider range to match number of converged steps
         n = max(len(self._disp) - 1, 0)
         self.sld_step.blockSignals(True)
@@ -3135,33 +3316,73 @@ class ResultsTab(QWidget):
         ys = [float(meta.get("y", 0.0)) for meta in self._element_responses]
         self.ax.scatter(xs, ys, s=28, facecolors='none', edgecolors="#ffd54f",
                         linewidths=1.2, zorder=6)
-        self.ax.text(0.02, 0.03, "Click a crack element marker to open its response history.",
+        self.ax.text(0.02, 0.03, "Click a crack marker or any triangle to view element response history.",
                      transform=self.ax.transAxes, color=TXTS, fontsize=8, family="monospace")
 
     def _on_canvas_click(self, event):
         """
         Handle a UI event and keep the related state in sync.
+        Clicking a crack marker opens CrackResponseDialog.
+        Clicking a triangle body element opens BodyElementDialog.
         """
         mode = self.cmb_plot.currentText()
         if mode not in ("Deformed Mesh", "Displacement Magnitude Contour", "Crack Behavior Overlay"):
             return
-        if event.inaxes != self.ax or event.xdata is None or event.ydata is None or not self._element_responses:
+        if event.inaxes != self.ax or event.xdata is None or event.ydata is None:
             return
-        xs = [float(meta.get("x", 0.0)) for meta in self._element_responses]
-        ys = [float(meta.get("y", 0.0)) for meta in self._element_responses]
-        bounds_x = max(xs) - min(xs) if len(xs) > 1 else 1.0
-        bounds_y = max(ys) - min(ys) if len(ys) > 1 else 1.0
-        tol = 0.04 * max(bounds_x, bounds_y, 1.0)
-        best_idx = None
-        best_dist = tol
-        for idx, (xv, yv) in enumerate(zip(xs, ys)):
-            dist = math.hypot(event.xdata - xv, event.ydata - yv)
-            if dist <= best_dist:
-                best_idx = idx
-                best_dist = dist
-        if best_idx is None:
+
+        # First try crack interface element markers
+        if self._element_responses:
+            xs = [float(meta.get("x", 0.0)) for meta in self._element_responses]
+            ys = [float(meta.get("y", 0.0)) for meta in self._element_responses]
+            bounds_x = max(xs) - min(xs) if len(xs) > 1 else 1.0
+            bounds_y = max(ys) - min(ys) if len(ys) > 1 else 1.0
+            tol = 0.04 * max(bounds_x, bounds_y, 1.0)
+            best_idx = None
+            best_dist = tol
+            for idx, (xv, yv) in enumerate(zip(xs, ys)):
+                dist = math.hypot(event.xdata - xv, event.ydata - yv)
+                if dist <= best_dist:
+                    best_idx = idx
+                    best_dist = dist
+            if best_idx is not None:
+                dlg = CrackResponseDialog(self._element_responses[best_idx], self)
+                dlg.exec_()
+                return
+
+        # Then try body triangle elements
+        self._on_mesh_click(event)
+
+    def _on_mesh_click(self, event):
+        """Find which tri element was clicked and show its stress history."""
+        if event.inaxes != self.ax:
             return
-        dlg = CrackResponseDialog(self._element_responses[best_idx], self)
+        if not self._mesh_tris:
+            return
+        if len(self._elem_stress_keys) == 0:
+            return
+        cx, cy = event.xdata, event.ydata
+        if cx is None or cy is None:
+            return
+        nodes = self._mesh_nodes
+        best_eid, best_dist = None, float('inf')
+        for tri_row in self._mesh_tris:
+            eid, n1, n2, n3 = int(tri_row[0]), tri_row[1], tri_row[2], tri_row[3]
+            if n1 in nodes and n2 in nodes and n3 in nodes:
+                x1, y1 = nodes[n1]; x2, y2 = nodes[n2]; x3, y3 = nodes[n3]
+                cx_e = (x1 + x2 + x3) / 3; cy_e = (y1 + y2 + y3) / 3
+                d = (cx_e - cx) ** 2 + (cy_e - cy) ** 2
+                if d < best_dist:
+                    best_dist = d; best_eid = eid
+        if best_eid is None:
+            return
+        idx_arr = np.where(self._elem_stress_keys == best_eid)[0]
+        if len(idx_arr) == 0:
+            QMessageBox.information(self, "No Data",
+                f"No stress history recorded for element {best_eid}.")
+            return
+        history = self._elem_stress_vals[idx_arr[0]]  # shape (n_steps, 3)
+        dlg = BodyElementDialog(best_eid, history, parent=self)
         dlg.exec_()
 
     def _save(self):
@@ -3743,7 +3964,17 @@ def run_model_2d(p):
                 mat_t = mat_id * 2
                 mat_n = mat_id * 2 + 1
 
-                if 'eppgap' in mat_type.lower() or 'elasticppgap' in mat_type.lower():
+                if 'simplespring' in mat_type.lower().replace(' ', ''):
+                    sp_Kn = float(cm.get('sp_Kn', cm.get('kn', 500.0)))
+                    sp_Ks = float(cm.get('sp_Ks', cm.get('kt', 200.0)))
+                    sp_gap = float(cm.get('sp_gap', 0.0))
+                    try:
+                        ops.uniaxialMaterial('ElasticPPGap', mat_n, sp_Kn, sp_Kn * 1e6, sp_gap, 0.0, 'damage')
+                    except Exception:
+                        ops.uniaxialMaterial('Elastic', mat_n, sp_Kn)
+                    ops.uniaxialMaterial('Elastic', mat_t, sp_Ks)
+                    _log(f"  [MAT] SimpleSpring crack {ci}: Kn={sp_Kn}, Ks={sp_Ks}, gap={sp_gap}")
+                elif 'eppgap' in mat_type.lower() or 'elasticppgap' in mat_type.lower():
                     ops.uniaxialMaterial('ElasticPPGap', mat_t, kt, kt * 5., gap, eta)
                     ops.uniaxialMaterial('ElasticPPGap', mat_n, kn, kn * 10., 0.0, eta)
                 elif 'bilinear' in mat_type.lower() or 'custom' in mat_type.lower():
@@ -3819,6 +4050,7 @@ def run_model_2d(p):
         nc_y = len(crack_y_set)
         open_l = [[] for _ in range(nc_y)]
         slip_l = [[] for _ in range(nc_y)]
+        elem_stress_history = {}  # {eid: [(sxx, syy, sxy), ...]}
 
         active_sys = p.get('solver_system', 'UmfPack')
         active_constr = p.get('constraint_handler', 'Plain')
@@ -3861,6 +4093,15 @@ def run_model_2d(p):
                         except: pass
                 open_l[yi].append(dw_sum / max(cnt, 1))
                 slip_l[yi].append(ds_sum / max(cnt, 1))
+            # Collect body element stress at each converged step
+            for tri_row in mesh_tris:
+                eid = int(tri_row[0])
+                try:
+                    s = ops.eleResponse(eid, 'stress')
+                    if s and len(s) >= 3:
+                        elem_stress_history.setdefault(eid, []).append((s[0], s[1], s[2]))
+                except Exception:
+                    pass
 
         failed = False; fm = ""
 
@@ -3993,12 +4234,25 @@ def run_model_2d(p):
         _log(f"summary: crack elements={n_ms} MSC2D, {n_ep} EPPGap macro, {n_el} other")
     _log("─" * 50)
 
+    # Serialize elem_stress_history for npz
+    esh_keys = np.array(sorted(elem_stress_history.keys()), dtype=np.int32) if elem_stress_history else np.array([], dtype=np.int32)
+    if len(esh_keys) > 0:
+        max_steps = max(len(elem_stress_history[k]) for k in esh_keys)
+        esh_vals = np.full((len(esh_keys), max_steps, 3), np.nan, dtype=np.float64)
+        for i, k in enumerate(esh_keys):
+            hist = elem_stress_history[k]
+            for j, (sxx, syy, sxy) in enumerate(hist):
+                esh_vals[i, j, :] = [sxx, syy, sxy]
+    else:
+        esh_vals = np.zeros((0, 0, 3), dtype=np.float64)
+
     return dict(
         disp=a(disp_l), force=a(force_l),
         crack_positions=a(cpos),
         crack_openings=la(open_l), crack_slips=la(slip_l),
         element_responses=pair_meta,
         node_disp_last_ids=nids_arr, node_disp_last_vals=disp_arr,
+        esh_keys=esh_keys, esh_vals=esh_vals,
         status=status, message=msg,
         log=list(_LOG_LINES),
     )
@@ -4041,6 +4295,8 @@ def main():
             crack_slips=np.array(r['crack_slips'], dtype=object),
             element_responses=np.array(r['element_responses'], dtype=object),
             node_disp_last_ids=nids, node_disp_last_vals=nvals,
+            esh_keys=r.get('esh_keys', np.array([], dtype=np.int32)),
+            esh_vals=r.get('esh_vals', np.zeros((0, 0, 3))),
             status=np.array([r['status']]),
             message=np.array([r['message']]))
         print(r['message'])
@@ -4163,6 +4419,10 @@ class WSLWorker(QThread):
                 if proc.stderr.strip():
                     self.log.emit("[FAIL STDERR] " + proc.stderr.strip()[:1000])
 
+            # Load body element stress history if available
+            esh_keys = np.array(data["esh_keys"], dtype=np.int32) if "esh_keys" in data else np.array([], dtype=np.int32)
+            esh_vals = np.array(data["esh_vals"], dtype=np.float64) if "esh_vals" in data else np.array([])
+
             result = dict(
                 status=raw_status,
                 message=raw_message,
@@ -4174,6 +4434,8 @@ class WSLWorker(QThread):
                 node_disp_last=node_disp_last,
                 mesh_nodes=mesh_nodes,
                 mesh_tris=mesh_tris,
+                esh_keys=esh_keys,
+                esh_vals=esh_vals,
                 returncode=proc.returncode,
             )
             self.finished.emit(result)
@@ -4243,11 +4505,23 @@ class MainWindow(QMainWindow):
         self.btn_csv = QPushButton("📊  Export CSV")
         self.btn_csv.setObjectName("flat"); self.btn_csv.setEnabled(False)
 
+        self.btn_gen_script_now = QPushButton("📋 Generate Script")
+        self.btn_gen_script_now.setObjectName("flat")
+        self.btn_gen_script_now.setToolTip(
+            "Export a standalone OpenSeesPy script now (no need to run analysis first).")
+
+        self.btn_example = QPushButton("📂 Calvi Panel")
+        self.btn_example.setObjectName("flat")
+        self.btn_example.setToolTip(
+            "Load the Calvi 2015 cracked panel example: single horizontal crack, "
+            "unbonded reinforcement, 1.0x2.0 m panel.")
+
         self.lbl_workflow = QLabel(
             "  ① Geometry  →  ② Crack Materials  →  ③ Analysis  →  ▶ Run Analysis  →  ⑤ Results")
         self.lbl_workflow.setStyleSheet(f"color:{TXTS};font-size:10px;")
 
         for w in [self.btn_run, self.btn_refresh_cracks, self.btn_gen_script,
+                  self.btn_gen_script_now, self.btn_example,
                   self.btn_save_png, self.btn_csv, self.lbl_workflow]:
             qal.addWidget(w)
         qal.addStretch()
@@ -4293,6 +4567,8 @@ class MainWindow(QMainWindow):
         self.scr.btn_gen.clicked.connect(self.generate_script)
         self.btn_save_png.clicked.connect(lambda: self.res._save())
         self.btn_csv.clicked.connect(lambda: self.res._csv())
+        self.btn_gen_script_now.clicked.connect(self._generate_script_now)
+        self.btn_example.clicked.connect(self._load_calvi_example)
 
         self._setup_menu()
         self._install_dirty_tracking()
@@ -4845,6 +5121,81 @@ class MainWindow(QMainWindow):
             event.accept()
         else:
             event.ignore()
+
+    def _generate_script_now(self):
+        """Generate script from current GUI state without running analysis."""
+        errs = self.geo.validate()
+        if errs:
+            QMessageBox.warning(self, "Incomplete Model",
+                "Fix these issues before generating script:\n\n" + "\n".join(errs))
+            return
+        if self.crk.tbl.rowCount() == 0:
+            self.crk.refresh_from_geometry(self.geo)
+        self.generate_script()
+        self.tabs.setCurrentWidget(self.scr)
+        self.statusBar().showMessage("Script generated — see Script tab.")
+        QMessageBox.information(self, "Script Ready",
+            "Standalone OpenSeesPy script has been generated.\n"
+            "Switch to the Script tab to copy or save it.")
+
+    def _load_calvi_example(self):
+        """Load the Calvi 2015 experimental validation case."""
+        ans = QMessageBox.question(self, "Load Calvi Example",
+            "This will reset the current model and load the Calvi 2015 panel configuration.\n\n"
+            "Panel: 1.0 x 2.0 m, crack at mid-height (y=1.0 m)\n"
+            "Material: SimpleSpring (Kn=500, Ks=200 MPa/mm)\n"
+            "BCs: bottom nodes pinned | Load: vertical on top nodes\n\n"
+            "Continue?")
+        if ans != QMessageBox.Yes:
+            return
+        # 1. Set geometry
+        self.geo.sb_W.setValue(1.0)
+        self.geo.sb_H.setValue(2.0)
+        self.geo.sb_t.setValue(0.15)
+        self.geo.sb_nx.setValue(6)
+        self.geo.sb_ny.setValue(12)
+        # 2. Set crack at mid-height
+        self.geo._crack_ys = [1.0]
+        self.geo.canvas.set_pending_cracks([1.0], 1.0, 2.0)
+        self.geo._refresh_crack_label()
+        # 3. Generate mesh
+        self.geo._generate()
+        md = self.geo.get_mesh_data()
+        if md is None:
+            QMessageBox.critical(self, "Error", "Failed to generate mesh.")
+            return
+        # 4. Apply pinned BCs to all bottom nodes (y ~ 0)
+        self.geo._bc_nodes.clear()
+        for nid, (x, y) in md["nodes"].items():
+            if abs(y) < 1e-8:
+                self.geo._bc_nodes[nid] = (1, 1)
+        self.geo.canvas.set_bc_nodes(self.geo._bc_nodes)
+        self.geo._update_bc_table()
+        # 5. Apply downward load on all top nodes
+        top_nodes = [nid for nid, (x, y) in md["nodes"].items()
+                     if abs(y - 2.0) < 1e-8]
+        self.geo._load_nodes.clear()
+        total_load = -200.0
+        per_node = total_load / max(len(top_nodes), 1)
+        for nid in top_nodes:
+            self.geo._load_nodes[nid] = (0.0, per_node)
+        self.geo.canvas.set_load_nodes(self.geo._load_nodes)
+        self.geo._update_load_table()
+        # 6. Refresh crack materials with SimpleSpring defaults
+        self.crk.refresh_from_geometry(self.geo)
+        self.crk.cmb_mat_tmpl.setCurrentText("SimpleSpring")
+        self.crk._apply_template_to_all()
+        # 7. Set analysis to LoadControl
+        idx = self.anl.cmb_type.findText("LoadControl")
+        if idx >= 0:
+            self.anl.cmb_type.setCurrentIndex(idx)
+        # 8. Generate the script
+        self.generate_script()
+        self.statusBar().showMessage(
+            "Calvi 2015 example loaded — review settings then Run Analysis.")
+        QMessageBox.information(self, "Example Loaded",
+            "Calvi 2015 panel configuration loaded successfully.\n\n"
+            "Review BCs, loads, and crack material settings, then click Run Analysis.")
 
     def generate_script(self):
         """
