@@ -1492,6 +1492,10 @@ class GeometryTab(QWidget):
         else:
             nx = self.sb_nx.value(); ny = self.sb_ny.value()
         crack_specs = self._build_crack_specs()
+        # Save old mesh/BC/load state before re-meshing for snapping
+        prev_nodes = self._mesh_data.get("nodes", {}) if self._mesh_data else {}
+        old_bc = dict(self._bc_nodes); old_ld = dict(self._load_nodes)
+
         nodes, tris, crack_pairs, crack_rows, snap_messages, snapped_specs = generate_panel_mesh(
             W, H, nx, ny, self._crack_ys,
             crack_specs=crack_specs,
@@ -1503,7 +1507,32 @@ class GeometryTab(QWidget):
                                crack_ys=self._crack_ys,
                                crack_specs=snapped_specs,
                                snap_messages=snap_messages)
+        # Preserve BCs and loads by snapping to nearest new node
         self._bc_nodes = {}; self._load_nodes = {}
+        if (old_bc or old_ld) and prev_nodes:
+            new_nids = sorted(nodes.keys())
+            new_coords = [(nodes[n][0], nodes[n][1]) for n in new_nids]
+            def _find_nearest(x, y):
+                best_d = float('inf'); best_nid = None
+                for i, (nx_, ny_) in enumerate(new_coords):
+                    d = (nx_ - x)**2 + (ny_ - y)**2
+                    if d < best_d:
+                        best_d = d; best_nid = new_nids[i]
+                return best_nid
+            for nid_str, bc_val in old_bc.items():
+                nid = int(nid_str)
+                if nid in prev_nodes:
+                    ox, oy = prev_nodes[nid]
+                    new_nid = _find_nearest(ox, oy)
+                    if new_nid is not None:
+                        self._bc_nodes[str(new_nid)] = bc_val
+            for nid_str, ld_val in old_ld.items():
+                nid = int(nid_str)
+                if nid in prev_nodes:
+                    ox, oy = prev_nodes[nid]
+                    new_nid = _find_nearest(ox, oy)
+                    if new_nid is not None:
+                        self._load_nodes[str(new_nid)] = ld_val
         self.canvas.set_mesh(nodes, tris, crack_pairs, crack_rows, W, H)
         self.canvas.set_bc_nodes(self._bc_nodes)
         self.canvas.set_load_nodes(self._load_nodes)
@@ -2096,22 +2125,22 @@ class CrackMaterialTab(QWidget):
         fm_sp.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         fm_sp.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
-        self.sb_sp_Kn = _make_dsb(500.0, 0.0, 1e9, 2, 10.0,
-            tip="Normal stiffness Kn (MPa/mm) — resistance to crack opening")
-        self.sb_sp_Ks = _make_dsb(200.0, 0.0, 1e9, 2, 10.0,
-            tip="Shear (tangential) stiffness Ks (MPa/mm) — resistance to crack slip")
+        self.sb_sp_Kn = _make_dsb(500000.0, 0.0, 1e12, 0, 1000.0,
+            tip="Normal stiffness Kn (kN/m) — resistance to crack opening")
+        self.sb_sp_Ks = _make_dsb(200000.0, 0.0, 1e12, 0, 1000.0,
+            tip="Shear (tangential) stiffness Ks (kN/m) — resistance to crack slip")
         self.sb_sp_gap = _make_dsb(0.0, -10., 0., 4, 0.001,
             tip="Compression gap (m) — crack closes at this opening. 0 = no gap")
         self.sb_sp_w0 = _make_dsb(0.0, 0.0, 50., 4, 0.01,
             tip="Initial crack width w0 (mm) — pre-existing crack opening")
 
-        fm_sp.addRow("Kn (MPa/mm):", self.sb_sp_Kn)
-        fm_sp.addRow("Ks (MPa/mm):", self.sb_sp_Ks)
+        fm_sp.addRow("Kn (kN/m):", self.sb_sp_Kn)
+        fm_sp.addRow("Ks (kN/m):", self.sb_sp_Ks)
         fm_sp.addRow("Gap (m):", self.sb_sp_gap)
         fm_sp.addRow("w0 (mm):", self.sb_sp_w0)
 
         lbl_spring_note = mk_lbl(
-            "Simple bilinear spring — suitable for Calvi 2015 validation.\n"
+            "Simple bilinear spring (kN/m units) — suitable for Calvi 2015 validation.\n"
             "Use MultiSurfCrack2D for full cyclic behavior.", "sub")
         lbl_spring_note.setWordWrap(True)
         fm_sp.addRow(lbl_spring_note)
@@ -2366,6 +2395,12 @@ class CrackMaterialTab(QWidget):
             msc_vals[key] = int(vals.get(key, src.get(key, default))) if key == "msc_cPath" \
                             else float(vals.get(key, src.get(key, default)))
         meta["msc2d"] = msc_vals
+        meta["spring"] = {
+            "sp_Kn": float(vals.get("sp_Kn", 500000.0)),
+            "sp_Ks": float(vals.get("sp_Ks", 200000.0)),
+            "sp_gap": float(vals.get("sp_gap", 0.0)),
+            "sp_w0": float(vals.get("sp_w0", 0.0)),
+        }
         theta_rad = float(vals.get("theta_rad", math.radians(vals.get("orientation_deg", 0.0))))
         cells = [
             str(int(vals["element_index"])),
@@ -2425,6 +2460,11 @@ class CrackMaterialTab(QWidget):
         for key, default in self._msc2d_defaults.items():
             vals[key] = int(msc.get(key, default)) if key == "msc_cPath" \
                         else float(msc.get(key, default))
+        sp = dict(meta.get("spring", {}))
+        vals["sp_Kn"] = float(sp.get("sp_Kn", 500000.0))
+        vals["sp_Ks"] = float(sp.get("sp_Ks", 200000.0))
+        vals["sp_gap"] = float(sp.get("sp_gap", 0.0))
+        vals["sp_w0"] = float(sp.get("sp_w0", 0.0))
         return vals
 
     def _apply_template_to_all(self):
@@ -2669,7 +2709,6 @@ QComboBox QAbstractItemView {{
         self.sb_cycle_amplitude = dsb(0.005, 1e-6, 1e6, 6, 0.001, tip="Cycle amplitude in active control units")
         self.sb_cycle_scale = dsb(1.0, 0.1, 10.0, 2, 0.1, tip="Amplitude multiplier applied each cycle")
         self.sb_half_cycle_steps = isb(10, 1, 1000, tip="Analysis steps per half-cycle")
-        self.lbl_cycle_amp = mk_lbl("Amplitude per cycle (m):", "sub")
         flp.addRow("Protocol:", proto_wrap)
         flp.addRow("Number of cycles:", self.sb_cycle_count)
         flp.addRow("Amplitude per cycle:", self.sb_cycle_amplitude)
@@ -3018,10 +3057,14 @@ class ResultsTab(QWidget):
         self.btn_rp    = QPushButton("Replot");     self.btn_rp.setObjectName("flat")
         self.btn_save  = QPushButton("Save PNG");   self.btn_save.setObjectName("flat")
         self.btn_csv   = QPushButton("Export CSV"); self.btn_csv.setObjectName("flat")
+        self.btn_load_exp = QPushButton("Load Exp. Data"); self.btn_load_exp.setObjectName("flat")
+        self.btn_clear_exp = QPushButton("Clear Exp."); self.btn_clear_exp.setObjectName("flat")
+        self.btn_clear_exp.setEnabled(False)
         for w in [mk_lbl("Plot:"), self.cmb_plot,
                   mk_lbl("  Crack:"), self.cmb_crack,
                   mk_lbl("  Scale ×"), self.sb_scale,
-                  self.btn_rp, self.btn_save, self.btn_csv]:
+                  self.btn_rp, self.btn_save, self.btn_csv,
+                  self.btn_load_exp, self.btn_clear_exp]:
             ctrl.addWidget(w)
         ctrl.addStretch()
         outer.addLayout(ctrl)
@@ -3061,6 +3104,8 @@ class ResultsTab(QWidget):
         self.btn_csv.clicked.connect(self._csv)
         self.cmb_ov_metric.currentIndexChanged.connect(self.replot)
         self.sld_step.valueChanged.connect(self._on_step_slider)
+        self.btn_load_exp.clicked.connect(self._load_exp_data)
+        self.btn_clear_exp.clicked.connect(self._clear_exp_data)
 
     def _style_ax(self):
         self.ax.set_facecolor(BG_PANEL)
@@ -3069,6 +3114,34 @@ class ResultsTab(QWidget):
         self.ax.title.set_color(C1)
         for s in self.ax.spines.values(): s.set_edgecolor(BORDER)
         self.ax.grid(True, alpha=0.15, color=BORDER, linestyle="--")
+
+    def _load_exp_data(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Load Experimental Data CSV", "",
+            "CSV files (*.csv);;All Files (*)")
+        if not path:
+            return
+        try:
+            import csv
+            disp_vals = []; force_vals = []
+            with open(path, newline='', encoding='utf-8-sig') as f:
+                reader = csv.reader(f)
+                header = next(reader, None)  # skip header
+                for row in reader:
+                    if len(row) >= 2:
+                        disp_vals.append(float(row[0]))
+                        force_vals.append(float(row[1]))
+            self._exp_disp = np.array(disp_vals)
+            self._exp_force = np.array(force_vals)
+            self.btn_clear_exp.setEnabled(True)
+            self.replot()
+        except Exception as e:
+            QMessageBox.warning(self, "Load Error", f"Failed to load CSV:\n{e}")
+
+    def _clear_exp_data(self):
+        self._exp_disp = None
+        self._exp_force = None
+        self.btn_clear_exp.setEnabled(False)
+        self.replot()
 
     def _on_plot_mode_changed(self, mode):
         is_overlay = (mode == "Crack Behavior Overlay")
@@ -3091,6 +3164,8 @@ class ResultsTab(QWidget):
         self._element_responses = []
         self._elem_stress_keys = np.array([], dtype=np.int32)
         self._elem_stress_vals = np.array([])
+        self._exp_disp = None
+        self._exp_force = None
 
     def set_results(self, r):
 
@@ -3130,6 +3205,9 @@ class ResultsTab(QWidget):
             if self._disp.size == 0:
                 self.ax.set_title("No data"); self.canv.draw(); return
             self.ax.plot(self._disp, self._force, color=C1, lw=1.8, label="Response")
+            if self._exp_disp is not None and self._exp_force is not None:
+                self.ax.plot(self._exp_disp, self._exp_force,
+                             color="#f0883e", lw=1.5, ls="--", label="Experimental")
             self.ax.set_xlabel("Displacement (m)"); self.ax.set_ylabel("Force (kN)")
             self.ax.set_title("Force–Displacement Response")
             self.ax.legend(facecolor=BG_CARD, edgecolor=BORDER, labelcolor=TXT, fontsize=9)
@@ -3743,6 +3821,7 @@ def run_model_2d(p):
     cpos = []
     nc_y = 0        # safe default — overwritten after crack_y_set is built
     pair_meta = []  # safe default — overwritten after crack loop
+    auto_fixes = {} # safe default — overwritten by _sanity_checks
 
     try:
         # probe material availability before committing to full model build
