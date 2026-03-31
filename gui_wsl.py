@@ -47,7 +47,7 @@ from PyQt5.QtWidgets import (
     QFrame, QSlider, QAbstractItemView, QDialog, QAbstractSpinBox,
     QSizePolicy, QAction, QMenu, QRadioButton,
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QObject, QEvent
 from PyQt5.QtGui import (
     QFont, QPainter, QPen, QBrush, QColor,
     QPainterPath, QFontMetrics, QImage,
@@ -177,6 +177,15 @@ def sep():
     f = QFrame(); f.setFrameShape(QFrame.HLine)
     f.setStyleSheet(f"color:{BORDER};background:{BORDER};max-height:1px;")
     return f
+
+
+class SpinboxWheelEventFilter(QObject):
+    """Prevent mouse wheel from changing numeric inputs while scrolling panes."""
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Wheel and isinstance(obj, QAbstractSpinBox):
+            event.ignore()
+            return True
+        return super().eventFilter(obj, event)
 
 def snap_crack_y(y, H, ny, allow_edge=True):
     """
@@ -841,6 +850,8 @@ class PanelMeshCanvas(QWidget):
 # geometry tab — panel dimensions, cracks, BCs, and mesh controls
 
 class GeometryTab(QWidget):
+    mesh_generated = pyqtSignal()
+
     def __init__(self):
         """
         Set up widget state, defaults, and signal wiring for this section.
@@ -1144,11 +1155,14 @@ class GeometryTab(QWidget):
         rv = QVBoxLayout(right); rv.setContentsMargins(8, 16, 16, 16); rv.setSpacing(6)
         mode_row = QHBoxLayout()
         self.lbl_canvas_hint = mk_lbl("Select mode: click a node to assign BC / load", "sub")
+        self.lbl_canvas_mode = mk_lbl("Mode: Select", "sub")
+        self.lbl_canvas_mode.setStyleSheet(f"color:{C4};font-weight:bold;")
         self.chk_show_ids = QCheckBox("Node IDs")
         self.chk_show_ids.setChecked(True)
         self.chk_show_crack_links = QCheckBox("Crack Links")
         self.chk_show_crack_links.setChecked(True)
         mode_row.addWidget(self.lbl_canvas_hint, stretch=1)
+        mode_row.addWidget(self.lbl_canvas_mode)
         mode_row.addWidget(self.chk_show_ids)
         mode_row.addWidget(self.chk_show_crack_links)
         rv.addLayout(mode_row)
@@ -1208,6 +1222,7 @@ class GeometryTab(QWidget):
         self._on_dim_change()
         self._sync_mesh_controls_from_divisions()
         self._on_mesh_mode_toggled()
+        self._set_canvas_mode(PanelMeshCanvas.MODE_SELECT)
 
     # ─ handlers for geometry and mesh control changes, crack spec updates, and background image management
     def _on_dim_change(self):
@@ -1345,11 +1360,9 @@ class GeometryTab(QWidget):
 
     def _toggle_crack_mode(self, on):
         if on:
-            self.canvas.set_mode(PanelMeshCanvas.MODE_CRACK)
-            self.lbl_canvas_hint.setText("Crack mode: click canvas to add/remove crack line. Right-click = node select.")
-        else:
-            self.canvas.set_mode(PanelMeshCanvas.MODE_SELECT)
-            self.lbl_canvas_hint.setText("Select mode: click a node to assign BC / load")
+            self._set_canvas_mode(PanelMeshCanvas.MODE_CRACK)
+        elif not self.btn_hand_draw.isChecked():
+            self._set_canvas_mode(PanelMeshCanvas.MODE_SELECT)
 
     def _add_crack_y(self, y):
         if not any(abs(y - yc) < 0.01 * self.sb_H.value() for yc in self._crack_ys):
@@ -1409,12 +1422,39 @@ class GeometryTab(QWidget):
     # hand-draw handlers
     def _toggle_hand_draw(self, on):
         if on:
-            self.btn_crack_mode.setChecked(False)   # deactivate click-crack mode
-            self.canvas.set_mode(PanelMeshCanvas.MODE_DRAW)
-            self.lbl_canvas_hint.setText("Draw mode: drag to trace a crack; right-click a red stroke to erase it.")
+            self._set_canvas_mode(PanelMeshCanvas.MODE_DRAW)
+        elif not self.btn_crack_mode.isChecked():
+            self._set_canvas_mode(PanelMeshCanvas.MODE_SELECT)
+
+    def _set_canvas_mode(self, mode):
+        self.canvas.set_mode(mode)
+        self.btn_crack_mode.blockSignals(True)
+        self.btn_hand_draw.blockSignals(True)
+        self.btn_crack_mode.setChecked(mode == PanelMeshCanvas.MODE_CRACK)
+        self.btn_hand_draw.setChecked(mode == PanelMeshCanvas.MODE_DRAW)
+        self.btn_crack_mode.blockSignals(False)
+        self.btn_hand_draw.blockSignals(False)
+        if mode == PanelMeshCanvas.MODE_DRAW:
+            self.lbl_canvas_mode.setText("Mode: Draw")
+            self.lbl_canvas_hint.setText("Draw mode: drag to trace a crack; click Draw Crack again to return to Select.")
+        elif mode == PanelMeshCanvas.MODE_CRACK:
+            self.lbl_canvas_mode.setText("Mode: Crack")
+            self.lbl_canvas_hint.setText("Crack mode: click canvas to add/remove crack line.")
         else:
-            self.canvas.set_mode(PanelMeshCanvas.MODE_SELECT)
+            self.lbl_canvas_mode.setText("Mode: Select")
             self.lbl_canvas_hint.setText("Select mode: click a node to assign BC / load")
+
+    def _node_map_get(self, dct, nid, default):
+        return dct.get(nid, dct.get(str(nid), default))
+
+    def _node_map_pop(self, dct, nid):
+        dct.pop(nid, None)
+        dct.pop(str(nid), None)
+
+    def _node_map_set(self, dct, nid, value):
+        key = int(nid)
+        dct[key] = value
+        dct.pop(str(key), None)
 
     def _on_hand_strokes_changed(self):
         """
@@ -1525,14 +1565,14 @@ class GeometryTab(QWidget):
                     ox, oy = prev_nodes[nid]
                     new_nid = _find_nearest(ox, oy)
                     if new_nid is not None:
-                        self._bc_nodes[str(new_nid)] = bc_val
+                        self._bc_nodes[int(new_nid)] = bc_val
             for nid_str, ld_val in old_ld.items():
                 nid = int(nid_str)
                 if nid in prev_nodes:
                     ox, oy = prev_nodes[nid]
                     new_nid = _find_nearest(ox, oy)
                     if new_nid is not None:
-                        self._load_nodes[str(new_nid)] = ld_val
+                        self._load_nodes[int(new_nid)] = ld_val
         self.canvas.set_mesh(nodes, tris, crack_pairs, crack_rows, W, H)
         self.canvas.set_bc_nodes(self._bc_nodes)
         self.canvas.set_load_nodes(self._load_nodes)
@@ -1553,6 +1593,7 @@ class GeometryTab(QWidget):
                 f"Consider adjusting nx or ny to reduce aspect ratio below {max_ar:.1f}.\n"
                 f"Poor aspect ratios reduce solver accuracy and convergence.")
         self._update_bc_table(); self._update_load_table()
+        self.mesh_generated.emit()
 
     def _on_node_clicked(self, nid):
         """
@@ -1563,9 +1604,9 @@ class GeometryTab(QWidget):
         if md is None: return
         x, y = md["nodes"][nid]
         self.lbl_sel_node.setText(f"Node #{nid}  (x={x:.4f}, y={y:.4f})")
-        bc = self._bc_nodes.get(nid, (0, 0))
+        bc = self._node_map_get(self._bc_nodes, nid, (0, 0))
         self.chk_fix_x.setChecked(bool(bc[0])); self.chk_fix_y.setChecked(bool(bc[1]))
-        ld = self._load_nodes.get(nid, (0., 0.))
+        ld = self._node_map_get(self._load_nodes, nid, (0., 0.))
         self.sb_node_Fx.setValue(ld[0]); self.sb_node_Fy.setValue(ld[1])
         self.btn_apply_bc.setEnabled(True); self.btn_clear_node_bc.setEnabled(True)
         self.btn_apply_load.setEnabled(True); self.btn_clear_node_load.setEnabled(True)
@@ -1576,14 +1617,14 @@ class GeometryTab(QWidget):
         fx = 1 if self.chk_fix_x.isChecked() else 0
         fy = 1 if self.chk_fix_y.isChecked() else 0
         if fx or fy:
-            self._bc_nodes[nid] = (fx, fy)
+            self._node_map_set(self._bc_nodes, nid, (fx, fy))
         else:
-            self._bc_nodes.pop(nid, None)
+            self._node_map_pop(self._bc_nodes, nid)
         self.canvas.set_bc_nodes(self._bc_nodes); self._update_bc_table()
 
     def _clear_node_bc(self):
         if self._selected_node is None: return
-        self._bc_nodes.pop(self._selected_node, None)
+        self._node_map_pop(self._bc_nodes, self._selected_node)
         self.chk_fix_x.setChecked(False); self.chk_fix_y.setChecked(False)
         self.canvas.set_bc_nodes(self._bc_nodes); self._update_bc_table()
 
@@ -1609,14 +1650,14 @@ class GeometryTab(QWidget):
         nid = self._selected_node
         Fx = self.sb_node_Fx.value(); Fy = self.sb_node_Fy.value()
         if abs(Fx) > 1e-12 or abs(Fy) > 1e-12:
-            self._load_nodes[nid] = (Fx, Fy)
+            self._node_map_set(self._load_nodes, nid, (Fx, Fy))
         else:
-            self._load_nodes.pop(nid, None)
+            self._node_map_pop(self._load_nodes, nid)
         self.canvas.set_load_nodes(self._load_nodes); self._update_load_table()
 
     def _clear_node_load(self):
         if self._selected_node is None: return
-        self._load_nodes.pop(self._selected_node, None)
+        self._node_map_pop(self._load_nodes, self._selected_node)
         self.sb_node_Fx.setValue(0.); self.sb_node_Fy.setValue(0.)
         self.canvas.set_load_nodes(self._load_nodes); self._update_load_table()
 
@@ -1671,15 +1712,17 @@ class GeometryTab(QWidget):
             "Click 'Refresh Crack Materials' to apply to MultiSurfCrack2D rows.")
 
     def _update_bc_table(self):
-        self.tbl_bc.setRowCount(len(self._bc_nodes))
-        for i, (nid, (fx, fy)) in enumerate(sorted(self._bc_nodes.items())):
+        items = sorted((int(nid), vals) for nid, vals in self._bc_nodes.items())
+        self.tbl_bc.setRowCount(len(items))
+        for i, (nid, (fx, fy)) in enumerate(items):
             self.tbl_bc.setItem(i, 0, QTableWidgetItem(str(nid)))
             self.tbl_bc.setItem(i, 1, QTableWidgetItem("✓" if fx else ""))
             self.tbl_bc.setItem(i, 2, QTableWidgetItem("✓" if fy else ""))
 
     def _update_load_table(self):
-        self.tbl_loads.setRowCount(len(self._load_nodes))
-        for i, (nid, (Fx, Fy)) in enumerate(sorted(self._load_nodes.items())):
+        items = sorted((int(nid), vals) for nid, vals in self._load_nodes.items())
+        self.tbl_loads.setRowCount(len(items))
+        for i, (nid, (Fx, Fy)) in enumerate(items):
             self.tbl_loads.setItem(i, 0, QTableWidgetItem(str(nid)))
             self.tbl_loads.setItem(i, 1, QTableWidgetItem(f"{Fx:.3f}"))
             self.tbl_loads.setItem(i, 2, QTableWidgetItem(f"{Fy:.3f}"))
@@ -2090,6 +2133,8 @@ class CrackMaterialTab(QWidget):
         self.sb_kt_sel    = _make_dsb(5.95,  1e-6, 1e9, 3, 1.)
         self.sb_gap_sel   = _make_dsb(0.001, 0., 10.,   4, 0.001)
         self.sb_eta_sel   = _make_dsb(0.02,  0., 1.,    3, 0.01)
+        self.sb_yield_sel = _make_dsb(0.001, 0., 10.,   4, 0.001)
+        self.chk_epp_damage_sel = QCheckBox("Enable damage")
 
         fe.addRow(self.lbl_selected)
         fe.addRow("Material:",          self.cmb_mat_sel)
@@ -2099,7 +2144,10 @@ class CrackMaterialTab(QWidget):
         fe.addRow("kt (kN/m):",         self.sb_kt_sel)
         fe.addRow("gap (m):",           self.sb_gap_sel)
         fe.addRow("eta:",               self.sb_eta_sel)
+        fe.addRow("Yield disp (m):",    self.sb_yield_sel)
+        fe.addRow("",                   self.chk_epp_damage_sel)
         grp_edit.setLayout(fe)
+        self._form_edit = fe
         outer.addWidget(grp_edit)
 
         # EPPGap info label
@@ -2267,7 +2315,6 @@ class CrackMaterialTab(QWidget):
         self.btn_set_msc2d_defaults.clicked.connect(self._set_msc2d_defaults_template_all)
         self.btn_reset_msc2d_defaults.clicked.connect(self._reset_msc2d_defaults)
         self.cmb_mat_sel.currentTextChanged.connect(self._update_material_type_visibility)
-        self.cmb_mat_tmpl.currentTextChanged.connect(self._update_material_type_visibility)
         self.tbl.itemSelectionChanged.connect(self._on_selection_changed)
         self._update_material_type_visibility(self.cmb_mat_sel.currentText())
 
@@ -2313,6 +2360,26 @@ class CrackMaterialTab(QWidget):
         self.lbl_eppgap_info.setVisible(self._is_eppgap_macro_type(mt))
         self.grp_spring.setVisible(self._is_simple_spring_type(mt))
 
+        mt_l = str(mt or "").strip().lower()
+        show_kn_kt_only = mt_l == "elastic"
+        show_elasticpp = "elasticppgap" in mt_l
+        show_epp_macro = self._is_eppgap_macro_type(mt)
+
+        self._set_form_field_visible(self.sb_width_sel, not (show_kn_kt_only or show_elasticpp or show_epp_macro))
+        self._set_form_field_visible(self.sb_ang_sel, not (show_kn_kt_only or show_elasticpp or show_epp_macro))
+        self._set_form_field_visible(self.sb_kn_sel, True)
+        self._set_form_field_visible(self.sb_kt_sel, True)
+        self._set_form_field_visible(self.sb_gap_sel, show_epp_macro)
+        self._set_form_field_visible(self.sb_eta_sel, show_epp_macro)
+        self._set_form_field_visible(self.sb_yield_sel, show_elasticpp)
+        self._set_form_field_visible(self.chk_epp_damage_sel, show_epp_macro)
+
+    def _set_form_field_visible(self, field_widget, visible):
+        lbl = self._form_edit.labelForField(field_widget) if hasattr(self, "_form_edit") else None
+        if lbl is not None:
+            lbl.setVisible(visible)
+        field_widget.setVisible(visible)
+
     def _set_msc2d_defaults_template_all(self):
         """
         Keep this part of the workflow stable and explicit for future debugging.
@@ -2336,6 +2403,8 @@ class CrackMaterialTab(QWidget):
             mat_type=self.cmb_mat_tmpl.currentText(),
             kn=self.sb_kn_tmpl.value(), kt=self.sb_kt_tmpl.value(),
             gap=self.sb_gap_tmpl.value(), eta=self.sb_eta_tmpl.value(),
+            yield_disp=self.sb_gap_tmpl.value(),
+            epp_damage=False,
         )
         if self._is_msc2d_type(vals["mat_type"]):
             vals.update(self._msc2d_values_from_widgets())
@@ -2352,7 +2421,11 @@ class CrackMaterialTab(QWidget):
             mat_type=self.cmb_mat_sel.currentText(),
             kn=self.sb_kn_sel.value(), kt=self.sb_kt_sel.value(),
             gap=self.sb_gap_sel.value(), eta=self.sb_eta_sel.value(),
+            yield_disp=self.sb_yield_sel.value(),
+            epp_damage=self.chk_epp_damage_sel.isChecked(),
         )
+        if "elasticppgap" in vals["mat_type"].lower():
+            vals["gap"] = vals["yield_disp"]
         if self._is_msc2d_type(vals["mat_type"]):
             vals.update(self._msc2d_values_from_widgets())
         if self._is_simple_spring_type(vals["mat_type"]):
@@ -2401,6 +2474,10 @@ class CrackMaterialTab(QWidget):
             "sp_gap": float(vals.get("sp_gap", 0.0)),
             "sp_w0": float(vals.get("sp_w0", 0.0)),
         }
+        meta["advanced"] = {
+            "yield_disp": float(vals.get("yield_disp", vals.get("gap", 0.001))),
+            "epp_damage": bool(vals.get("epp_damage", False)),
+        }
         theta_rad = float(vals.get("theta_rad", math.radians(vals.get("orientation_deg", 0.0))))
         cells = [
             str(int(vals["element_index"])),
@@ -2432,6 +2509,8 @@ class CrackMaterialTab(QWidget):
         self.sb_kt_sel.setValue(float(vals["kt"]))
         self.sb_gap_sel.setValue(float(vals["gap"]))
         self.sb_eta_sel.setValue(float(vals["eta"]))
+        self.sb_yield_sel.setValue(float(vals.get("yield_disp", vals.get("gap", 0.001))))
+        self.chk_epp_damage_sel.setChecked(bool(vals.get("epp_damage", False)))
         self._set_msc2d_widgets(vals)
         self._update_material_type_visibility(vals["mat_type"])
 
@@ -2465,6 +2544,9 @@ class CrackMaterialTab(QWidget):
         vals["sp_Ks"] = float(sp.get("sp_Ks", 200000.0))
         vals["sp_gap"] = float(sp.get("sp_gap", 0.0))
         vals["sp_w0"] = float(sp.get("sp_w0", 0.0))
+        adv = dict(meta.get("advanced", {}))
+        vals["yield_disp"] = float(adv.get("yield_disp", vals.get("gap", 0.001)))
+        vals["epp_damage"] = bool(adv.get("epp_damage", False))
         return vals
 
     def _apply_template_to_all(self):
@@ -4650,8 +4732,11 @@ class MainWindow(QMainWindow):
         self.btn_example.clicked.connect(self._load_calvi_example)
 
         self._setup_menu()
+        self._install_spinbox_wheel_guard()
         self._install_dirty_tracking()
         self._update_window_title()
+
+        self.geo.mesh_generated.connect(lambda: self.crk.refresh_from_geometry(self.geo))
 
         QTimer.singleShot(900, self.check_wsl)
 
@@ -4713,6 +4798,12 @@ class MainWindow(QMainWindow):
         for parent in [self.geo, self.crk, self.anl, self.run]:
             _connect_spinboxes(parent)
         self.crk.tbl.itemChanged.connect(lambda *_: self._set_dirty(True))
+
+    def _install_spinbox_wheel_guard(self):
+        self._spinbox_wheel_guard = SpinboxWheelEventFilter(self)
+        for sb in self.findChildren(QAbstractSpinBox):
+            sb.installEventFilter(self._spinbox_wheel_guard)
+            sb.setFocusPolicy(Qt.StrongFocus)
 
     def _update_window_title(self):
         name = Path(self._project_path).name if self._project_path else "New Project"
