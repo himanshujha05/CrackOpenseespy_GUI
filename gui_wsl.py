@@ -3260,7 +3260,7 @@ QComboBox QAbstractItemView {{
         self.sb_di.setValue(float(state.get("disp_incr", 0.0005)))
         self.sb_tgt.setValue(float(state.get("target_disp", 0.05)))
         self.sb_li.setValue(float(state.get("load_incr", 0.01)))
-        self.cmb_alg.setCurrentText(state.get("algorithm", "NewtonLineSearch"))
+        self.cmb_alg.setCurrentText(state.get("algorithm", "KrylovNewton"))
         self.sb_tol.setValue(float(state.get("tol", 1e-8)))
         self.sb_iter.setValue(int(state.get("max_iter", 400)))
         self.sb_lam.setValue(float(state.get("max_load_factor", 1.0)))
@@ -4266,7 +4266,7 @@ def _step_with_recovery(ops, p, at, ln, dof, incr, step_num=0):
 
 def _step_normal(ops, p, at, ln, dof, incr, sys_type, constr_type):
     """Normal step with algorithm fallback only (fast path)."""
-    for alg in ['NewtonLineSearch', 'ModifiedNewton', 'KrylovNewton', 'Newton']:
+    for alg in ['KrylovNewton', 'NewtonLineSearch', 'ModifiedNewton', 'Newton']:
         _build_analysis(ops, p, at, ln, dof, incr, alg, sys_type, constr_type)
         if ops.analyze(1) == 0:
             return 0, alg
@@ -5869,7 +5869,7 @@ class MainWindow(QMainWindow):
         self.geo._update_load_table()
         # 6. Refresh crack materials with SimpleSpring defaults
         self.crk.refresh_from_geometry(self.geo)
-        self.crk.cmb_mat_tmpl.setCurrentText("SimpleSpring")
+        self.crk.cmb_mat_tmpl.setCurrentText("Calvi2015 (EPP-normal / Elastic-shear)")
         self.crk._apply_template_to_all()
         # 7. Set analysis to LoadControl
         idx = self.anl.cmb_type.findText("LoadControl")
