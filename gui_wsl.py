@@ -1142,24 +1142,61 @@ class GeometryTab(QWidget):
 
         # Reinforcement (Crossing Cracks)
         grp_rebar = QGroupBox("Reinforcement (Crossing Cracks)")
-        fr = QFormLayout(grp_rebar); fr.setSpacing(6)
-        self.sb_rho_s = dsb(0.01, 0.0, 1.0, 4, 0.001,
-            tip="Reinforcement ratio rho_s = As/Ac. Typical: 0.005-0.05")
-        self.sb_Es = dsb(200000.0, 1., 1e8, 0, 1000.,
-            tip="Steel elastic modulus Es (MPa). Typical: 200,000 MPa")
-        self.sb_Lunb = dsb(0.05, 0.0, 10., 4, 0.01,
+        vr = QVBoxLayout(grp_rebar); vr.setSpacing(6)
+        fr = QFormLayout(); fr.setSpacing(6)
+        self.cmb_rebar_crack_y = QComboBox()
+        self.sb_rebar_As = dsb(100.0, 1e-6, 1e9, 3, 10.0,
+            tip="Rebar area As (mm^2)")
+        self.sb_rebar_Es = dsb(200000.0, 1., 1e9, 0, 1000.,
+            tip="Steel elastic modulus Es (MPa)")
+        self.sb_rebar_fy = dsb(500.0, 1e-6, 1e9, 1, 10.0,
+            tip="Steel yield stress fy (MPa)")
+        self.sb_rebar_Lunb = dsb(0.05, 0.0, 10., 4, 0.01,
             tip="Unbonded length L_unb (m)")
-        self.btn_push_rebar = QPushButton("Push to Crack Materials")
-        self.btn_push_rebar.setObjectName("flat")
-        self.btn_push_rebar.setToolTip(
-            "Store rebar params for use in MultiSurfCrack2D rows.")
-        fr.addRow("rho_s (ratio):", self.sb_rho_s)
-        fr.addRow("Es (MPa):", self.sb_Es)
-        fr.addRow("L_unb (m):", self.sb_Lunb)
-        fr.addRow(self.btn_push_rebar)
+        x_row = QHBoxLayout()
+        self.sb_rebar_x = dsb(0.0, -1e6, 1e6, 4, 0.01,
+            tip="Bar x position along crack (m)")
+        self.chk_rebar_uniform = QCheckBox("uniform")
+        x_row.addWidget(self.sb_rebar_x)
+        x_row.addWidget(self.chk_rebar_uniform)
+        x_wrap = QWidget(); x_wrap.setLayout(x_row)
+        fr.addRow("Crack Y (m):", self.cmb_rebar_crack_y)
+        fr.addRow("As (mm^2):", self.sb_rebar_As)
+        fr.addRow("Es (MPa):", self.sb_rebar_Es)
+        fr.addRow("fy (MPa):", self.sb_rebar_fy)
+        fr.addRow("L_unb (m):", self.sb_rebar_Lunb)
+        fr.addRow("X position (m):", x_wrap)
+        vr.addLayout(fr)
+
+        rebar_btn_row = QHBoxLayout()
+        self.btn_add_rebar = QPushButton("Add Rebar")
+        self.btn_add_rebar.setObjectName("flat")
+        self.btn_remove_rebar = QPushButton("Remove Selected")
+        self.btn_remove_rebar.setObjectName("danger")
+        rebar_btn_row.addWidget(self.btn_add_rebar)
+        rebar_btn_row.addWidget(self.btn_remove_rebar)
+        rebar_btn_row.addStretch()
+        vr.addLayout(rebar_btn_row)
+
+        self.tbl_rebar = QTableWidget(0, 6)
+        self.tbl_rebar.setHorizontalHeaderLabels([
+            "Crack Y", "As (mm^2)", "Es (MPa)", "fy (MPa)", "L_unb (m)", "X (m)"
+        ])
+        self.tbl_rebar.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tbl_rebar.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tbl_rebar.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.tbl_rebar.setMaximumHeight(160)
+        vr.addWidget(self.tbl_rebar)
         lv.addWidget(grp_rebar)
-        self.btn_push_rebar.clicked.connect(self._push_rebar_to_materials)
-        self._rebar_params = {}
+        self._rebar_definitions = []
+        self.chk_rebar_uniform.toggled.connect(self.sb_rebar_x.setDisabled)
+        self.btn_add_rebar.clicked.connect(self._add_rebar_definition)
+        self.btn_remove_rebar.clicked.connect(self._remove_selected_rebar_definitions)
+        self._crack_ys = []
+        self._hand_crack_ys = []
+        self._hand_crack_defs = []
+        self._rebar_definitions = []
+        self._refresh_rebar_crack_y_options()
 
         lv.addStretch()
 
@@ -1433,7 +1470,63 @@ class GeometryTab(QWidget):
                 f"   |   default θ = {self.sb_crack_angle.value():.1f}°")
         else:
             self.lbl_crack_ys.setText("No crack lines defined.")
+        self._refresh_rebar_crack_y_options()
         self._update_edge_snap_preview()
+
+    def _refresh_rebar_crack_y_options(self):
+        ys = sorted(float(y) for y in self._crack_ys)
+        current = self.cmb_rebar_crack_y.currentData()
+        self.cmb_rebar_crack_y.blockSignals(True)
+        self.cmb_rebar_crack_y.clear()
+        for y in ys:
+            self.cmb_rebar_crack_y.addItem(f"{y:.4f}", y)
+        self.cmb_rebar_crack_y.blockSignals(False)
+        if current is not None:
+            for idx in range(self.cmb_rebar_crack_y.count()):
+                if abs(float(self.cmb_rebar_crack_y.itemData(idx)) - float(current)) < 1e-9:
+                    self.cmb_rebar_crack_y.setCurrentIndex(idx)
+                    break
+        self.btn_add_rebar.setEnabled(self.cmb_rebar_crack_y.count() > 0)
+
+    def _refresh_rebar_table(self):
+        self.tbl_rebar.setRowCount(len(self._rebar_definitions))
+        for r, rb in enumerate(self._rebar_definitions):
+            x_val = rb.get("x", None)
+            cells = [
+                f"{float(rb.get('crack_y', 0.0)):.4f}",
+                f"{float(rb.get('As', 0.0)):.3f}",
+                f"{float(rb.get('Es', 0.0)):.1f}",
+                f"{float(rb.get('fy', 0.0)):.1f}",
+                f"{float(rb.get('L_unb', 0.0)):.4f}",
+                "uniform" if x_val is None else f"{float(x_val):.4f}",
+            ]
+            for c, txt in enumerate(cells):
+                self.tbl_rebar.setItem(r, c, QTableWidgetItem(txt))
+
+    def _add_rebar_definition(self):
+        if self.cmb_rebar_crack_y.count() == 0:
+            QMessageBox.warning(self, "No Crack Rows", "Define at least one crack Y before adding rebar.")
+            return
+        crack_y = float(self.cmb_rebar_crack_y.currentData())
+        entry = {
+            "crack_y": crack_y,
+            "As": float(self.sb_rebar_As.value()),
+            "Es": float(self.sb_rebar_Es.value()),
+            "fy": float(self.sb_rebar_fy.value()),
+            "L_unb": float(self.sb_rebar_Lunb.value()),
+            "x": None if self.chk_rebar_uniform.isChecked() else float(self.sb_rebar_x.value()),
+        }
+        self._rebar_definitions.append(entry)
+        self._refresh_rebar_table()
+
+    def _remove_selected_rebar_definitions(self):
+        rows = sorted({idx.row() for idx in self.tbl_rebar.selectionModel().selectedRows()}, reverse=True)
+        if not rows:
+            return
+        for row in rows:
+            if 0 <= row < len(self._rebar_definitions):
+                self._rebar_definitions.pop(row)
+        self._refresh_rebar_table()
 
     # hand-draw handlers
     def _toggle_hand_draw(self, on):
@@ -1717,16 +1810,6 @@ class GeometryTab(QWidget):
             f"  Fy = {Fy_each:.3f} kN/node  (normal, N={N_total:.1f} kN)\n"
             f"  Fx = {Fx_each:.3f} kN/node  (shear, gamma={gamma:.2f})")
 
-    def _push_rebar_to_materials(self):
-        """Store reinforcement geometry params for retrieval by MainWindow."""
-        rho_s = self.sb_rho_s.value()
-        Es = self.sb_Es.value()
-        Lunb = self.sb_Lunb.value()
-        self._rebar_params = {"rho_s": rho_s, "Es": Es, "Lunb": Lunb}
-        QMessageBox.information(self, "Rebar Params Stored",
-            f"rho_s={rho_s:.4f}, Es={Es:.0f} MPa, L_unb={Lunb:.4f} m\n\n"
-            "Click 'Refresh Crack Materials' to apply to MultiSurfCrack2D rows.")
-
     def _update_bc_table(self):
         items = sorted((int(nid), vals) for nid, vals in self._bc_nodes.items())
         self.tbl_bc.setRowCount(len(items))
@@ -1886,6 +1969,7 @@ class GeometryTab(QWidget):
                                    for s in self._hand_strokes]
         p["hand_crack_ys"]      = list(self._hand_crack_ys)
         p["hand_crack_defs"]    = [dict(item) for item in self._hand_crack_defs]
+        p["rebar_definitions"]  = [dict(item) for item in self._rebar_definitions]
         p["background_image"]   = self._bg_image_path
         return p
 
@@ -1915,6 +1999,18 @@ class GeometryTab(QWidget):
         self._crack_ys = list(float(v) for v in state.get("crack_ys", []))
         self._hand_crack_ys = list(float(v) for v in state.get("hand_crack_ys", []))
         self._hand_crack_defs = [dict(item) for item in state.get("hand_crack_defs", [])]
+        self._rebar_definitions = [
+            {
+                "crack_y": float(item.get("crack_y", 0.0)),
+                "As": float(item.get("As", 0.0)),
+                "Es": float(item.get("Es", 200000.0)),
+                "fy": float(item.get("fy", 500.0)),
+                "L_unb": float(item.get("L_unb", 0.05)),
+                "x": (None if item.get("x", None) is None else float(item.get("x"))),
+            }
+            for item in state.get("rebar_definitions", [])
+        ]
+        self._refresh_rebar_table()
         self._hand_strokes = [list((float(pt[0]), float(pt[1])) for pt in stroke)
                               for stroke in state.get("hand_crack_strokes", [])]
         self.canvas.set_hand_strokes(self._hand_strokes)
@@ -1952,6 +2048,140 @@ class GeometryTab(QWidget):
 
 
 # crack materials tab — per-interface material assignment
+
+class PreviewWorker(QThread):
+    finished = pyqtSignal(dict)
+    error = pyqtSignal(str)
+
+    def __init__(self, mat_vals, amplitude, n_cycles, activate_cmd, is_windows, python_cmd):
+        super().__init__()
+        self.mat_vals = dict(mat_vals or {})
+        self.amplitude = float(amplitude)
+        self.n_cycles = int(n_cycles)
+        self.activate_cmd = str(activate_cmd or "true")
+        self.is_windows = bool(is_windows)
+        self.python_cmd = str(python_cmd or "python3")
+
+    def run(self):
+        import tempfile
+
+        mat_json = json.dumps(self.mat_vals)
+        amp = max(float(self.amplitude), 1e-9)
+        ncy = max(int(self.n_cycles), 1)
+        script = f"""
+import json, math, sys
+import openseespy.opensees as ops
+
+try:
+    cm = json.loads({repr(mat_json)})
+    ops.wipe()
+    ops.model('basic', '-ndm', 1, '-ndf', 1)
+    ops.node(1, 0.0)
+    ops.node(2, 0.0)
+    ops.fix(1, 1)
+
+    mat_type = str(cm.get('mat_type', 'Elastic'))
+    kt = max(float(cm.get('kt', 5.95)), 1e-6)
+    gap = float(cm.get('gap', 0.001))
+    eta = float(cm.get('eta', 0.02))
+    mt = mat_type.lower().replace(' ', '')
+    if ('simplespring' in mt) or ('calvi2015' in mt):
+        sp_Ks = float(cm.get('sp_Ks', cm.get('kt', 200.0)))
+        ops.uniaxialMaterial('Elastic', 1, sp_Ks)
+    elif ('eppgap' in mt) or ('elasticppgap' in mt) or ('macro' in mt):
+        ops.uniaxialMaterial('ElasticPPGap', 1, kt, kt * 5.0, gap, eta)
+    elif ('bilinear' in mt) or ('custom' in mt):
+        ops.uniaxialMaterial('Steel01', 1, kt * max(gap, 1e-9), kt, eta)
+    elif ('multisurfcrack2d' in mt) or ('multi' in mt):
+        raise RuntimeError('MultiSurfCrack2D preview is not supported in uniaxial tester mode')
+    else:
+        ops.uniaxialMaterial('Elastic', 1, kt)
+
+    ops.element('zeroLength', 1, 1, 2, '-mat', 1, '-dir', 1)
+
+    ops.timeSeries('Linear', 1)
+    ops.pattern('Plain', 1, 1)
+    ops.load(2, 1.0)
+    ops.constraints('Plain')
+    ops.numberer('RCM')
+    ops.system('BandGeneral')
+    ops.test('NormDispIncr', 1e-8, 100)
+    ops.algorithm('KrylovNewton')
+
+    slip = []
+    force = []
+    steps_half = 10
+    targets = []
+    for _ in range(max(int({ncy}), 1)):
+        targets.extend([float({amp}), -float({amp}), 0.0])
+
+    current = 0.0
+    for tgt in targets:
+        incr = (float(tgt) - float(current)) / float(steps_half)
+        if abs(incr) < 1e-12:
+            continue
+        ops.integrator('DisplacementControl', 2, 1, incr)
+        ops.analysis('Static')
+        for _ in range(steps_half):
+            ok = ops.analyze(1)
+            if ok != 0:
+                break
+            du = float(ops.nodeDisp(2, 1))
+            ef = ops.eleForce(1)
+            f = float(ef[0]) if ef else 0.0
+            slip.append(du)
+            force.append(f)
+        current = float(ops.nodeDisp(2, 1))
+
+    print(json.dumps({{"slip": slip, "force": force}}))
+except Exception as e:
+    print(str(e), file=sys.stderr)
+    raise
+"""
+
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile("w", suffix="_preview_worker.py", delete=False, encoding="utf-8") as tf:
+                tf.write(script)
+                tmp_path = Path(tf.name)
+
+            if self.is_windows:
+                wsl_script = win_to_wsl(tmp_path)
+                if self.activate_cmd.strip():
+                    cmd = ["wsl", "bash", "-lc", f"{self.activate_cmd} && python3 {shlex.quote(wsl_script)}"]
+                else:
+                    cmd = ["wsl", "bash", "-lc", f"python3 {shlex.quote(wsl_script)}"]
+            else:
+                if self.activate_cmd.strip():
+                    cmd = ["bash", "-lc", f"{self.activate_cmd} && {self.python_cmd} {shlex.quote(str(tmp_path))}"]
+                else:
+                    cmd = [self.python_cmd, str(tmp_path)]
+
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if proc.returncode != 0:
+                raise RuntimeError((proc.stderr or proc.stdout or "Preview runner failed").strip())
+
+            payload = None
+            for line in reversed((proc.stdout or "").splitlines()):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                    break
+                except Exception:
+                    continue
+            if not isinstance(payload, dict):
+                raise RuntimeError("Preview output JSON not found in runner stdout")
+            self.finished.emit(payload)
+        except Exception as e:
+            self.error.emit(str(e))
+        finally:
+            try:
+                if tmp_path is not None and tmp_path.exists():
+                    tmp_path.unlink()
+            except Exception:
+                pass
 
 class CrackMaterialTab(QWidget):
     def __init__(self):
@@ -2072,7 +2302,7 @@ class CrackMaterialTab(QWidget):
 
         mat_items = [
             "MultiSurfCrack2D", "EPPGap Macro (4-spring)",
-            "Elastic", "ElasticPPGap", "CustomBilinear", "SimpleSpring",
+            "Elastic", "ElasticPPGap", "CustomBilinear", "Calvi2015 (EPP-normal / Elastic-shear)",
         ]
         mat_tip = (
             "MultiSurfCrack2D: plasticity-based multi-yield-surface crack model (the reference paper)\n"
@@ -2080,7 +2310,7 @@ class CrackMaterialTab(QWidget):
             "Elastic: linear spring (kn/kt)\n"
             "ElasticPPGap: elastic + perfect plastic gap spring\n"
             "CustomBilinear: piecewise linear force-displacement\n"
-            "SimpleSpring: bilinear Kn/Ks spring (Calvi 2015 validation)"
+            "Calvi2015 (EPP-normal / Elastic-shear): bilinear normal+shear spring for Calvi 2015 validation"
         )
 
         # Template group box
@@ -2099,6 +2329,7 @@ class CrackMaterialTab(QWidget):
         self.sb_kt_tmpl    = _make_dsb(5.95,  1e-6, 1e9, 3, 1.,    "Shear stiffness kt (kN/m)")
         self.sb_gap_tmpl   = _make_dsb(0.001, 0., 10.,   4, 0.001, "Gap before spring engages (m)")
         self.sb_eta_tmpl   = _make_dsb(0.02,  0., 1.,    3, 0.01,  "Hardening ratio eta")
+        self.sb_yield_tmpl = _make_dsb(0.001, 0., 10.,   4, 0.001, "Yield displacement (m)")
 
         ft.addRow("Material type:",     self.cmb_mat_tmpl)
         ft.addRow("Width (m):",         self.sb_width_tmpl)
@@ -2107,6 +2338,7 @@ class CrackMaterialTab(QWidget):
         ft.addRow("kt (kN/m):",         self.sb_kt_tmpl)
         ft.addRow("gap (m):",           self.sb_gap_tmpl)
         ft.addRow("eta hardening:",     self.sb_eta_tmpl)
+        ft.addRow("Yield disp (m):",    self.sb_yield_tmpl)
 
         auto_row = QHBoxLayout(); auto_row.setSpacing(6)
         self.sb_fc_auto = _make_dsb(30., 1., 200., 1, 1., "f'c (MPa) for auto kn/kt")
@@ -2129,6 +2361,8 @@ class CrackMaterialTab(QWidget):
         auto_row.addStretch()
         auto_wrap = QWidget(); auto_wrap.setLayout(auto_row)
         ft.addRow("", auto_wrap)
+        self._form_tmpl = ft
+        self._tmpl_auto_wrap = auto_wrap
         grp_tmpl.setLayout(ft)
         outer.addWidget(grp_tmpl)
 
@@ -2180,8 +2414,12 @@ class CrackMaterialTab(QWidget):
         self.lbl_eppgap_info.setVisible(False)
         outer.addWidget(self.lbl_eppgap_info)
 
-        # SimpleSpring group (Calvi validation material)
-        self.grp_spring = QGroupBox("Simple Spring (Kn / Ks)")
+        # Calvi2015 group (Calvi validation material)
+        self.grp_spring = QGroupBox("Calvi2015 (EPP-normal / Elastic-shear)")
+        self.grp_spring.setToolTip(
+            "Bilinear normal spring (ElasticPPGap — open in tension, rigid in compression) + linear shear spring. "
+            "Designed for Calvi 2015 experimental validation. For general use, prefer ElasticPPGap or MultiSurfCrack2D."
+        )
         self.grp_spring.setVisible(False)
         fm_sp = QFormLayout(self.grp_spring)
         fm_sp.setContentsMargins(12, 12, 12, 12)
@@ -2204,7 +2442,7 @@ class CrackMaterialTab(QWidget):
         fm_sp.addRow("w0 (mm):", self.sb_sp_w0)
 
         lbl_spring_note = mk_lbl(
-            "Simple bilinear spring (kN/m units) — suitable for Calvi 2015 validation.\n"
+            "Calvi2015 bilinear spring (kN/m units) — suitable for Calvi 2015 validation.\n"
             "Use MultiSurfCrack2D for full cyclic behavior.", "sub")
         lbl_spring_note.setWordWrap(True)
         fm_sp.addRow(lbl_spring_note)
@@ -2299,6 +2537,38 @@ class CrackMaterialTab(QWidget):
         self.grp_msc2d.setLayout(fm2)
         self.grp_msc2d.setVisible(False)
         outer.addWidget(self.grp_msc2d)
+
+        # Material response preview
+        grp_preview = QGroupBox("Material Response Preview")
+        hpv = QHBoxLayout(grp_preview)
+        left_preview = QWidget()
+        fl_prev = QFormLayout(left_preview)
+        self.btn_preview = QPushButton("▶ Preview")
+        self.btn_preview.setObjectName("flat")
+        self.sb_preview_amp = dsb(0.002, 1e-6, 1.0, 4, 0.0005, w=120)
+        self.sb_preview_cycles = isb(3, 1, 10, w=120)
+        self.lbl_preview_status = mk_lbl("Idle", "sub")
+        fl_prev.addRow(self.btn_preview)
+        fl_prev.addRow("Amplitude (m):", self.sb_preview_amp)
+        fl_prev.addRow("Cycles:", self.sb_preview_cycles)
+        fl_prev.addRow("Status:", self.lbl_preview_status)
+        hpv.addWidget(left_preview, stretch=0)
+
+        self.preview_fig = Figure(facecolor=BG_DEEP, tight_layout=True)
+        self.ax_prev = self.preview_fig.add_subplot(111)
+        self.ax_prev.set_facecolor(BG_PANEL)
+        self.ax_prev.tick_params(colors=TXTS, labelsize=9)
+        self.ax_prev.xaxis.label.set_color(TXT)
+        self.ax_prev.yaxis.label.set_color(TXT)
+        for s in self.ax_prev.spines.values():
+            s.set_edgecolor(BORDER)
+        self.ax_prev.grid(True, alpha=0.15, color=BORDER, linestyle="--")
+        self.ax_prev.set_title("Force vs Displacement", color=C1)
+        self.ax_prev.set_xlabel("Displacement (m)")
+        self.ax_prev.set_ylabel("Force (kN)")
+        self.preview_canvas = FigureCanvas(self.preview_fig)
+        hpv.addWidget(self.preview_canvas, stretch=1)
+        outer.addWidget(grp_preview)
         outer.addStretch()
 
         scroll.setWidget(content)
@@ -2330,9 +2600,12 @@ class CrackMaterialTab(QWidget):
         self.btn_auto_knkt.clicked.connect(self._auto_kn_kt)
         self.btn_set_msc2d_defaults.clicked.connect(self._set_msc2d_defaults_template_all)
         self.btn_reset_msc2d_defaults.clicked.connect(self._reset_msc2d_defaults)
+        self.btn_preview.clicked.connect(self._run_preview)
         self.cmb_mat_sel.currentTextChanged.connect(self._update_material_type_visibility)
+        self.cmb_mat_tmpl.currentTextChanged.connect(self._on_tmpl_mat_changed)
         self.tbl.itemSelectionChanged.connect(self._on_selection_changed)
         self._update_material_type_visibility(self.cmb_mat_sel.currentText())
+        self._on_tmpl_mat_changed(self.cmb_mat_tmpl.currentText())
 
     def _auto_kn_kt(self):
         w = max(self.sb_w0_auto.value(), 0.001)
@@ -2368,7 +2641,8 @@ class CrackMaterialTab(QWidget):
         self._set_msc2d_widgets(self._msc2d_defaults)
 
     def _is_simple_spring_type(self, mat_type):
-        return "simplespring" in str(mat_type or "").strip().lower().replace(" ", "")
+        mt = str(mat_type or "").strip().lower().replace(" ", "")
+        return ("simplespring" in mt) or ("calvi2015" in mt)
 
     def _update_material_type_visibility(self, mat_type=None):
         mt = mat_type if mat_type is not None else self.cmb_mat_sel.currentText()
@@ -2385,16 +2659,89 @@ class CrackMaterialTab(QWidget):
         self._set_form_field_visible(self.sb_ang_sel, not (show_kn_kt_only or show_elasticpp or show_epp_macro))
         self._set_form_field_visible(self.sb_kn_sel, True)
         self._set_form_field_visible(self.sb_kt_sel, True)
-        self._set_form_field_visible(self.sb_gap_sel, show_epp_macro)
-        self._set_form_field_visible(self.sb_eta_sel, show_epp_macro)
+        self._set_form_field_visible(self.sb_gap_sel, show_epp_macro or show_elasticpp)
+        self._set_form_field_visible(self.sb_eta_sel, show_epp_macro or show_elasticpp)
         self._set_form_field_visible(self.sb_yield_sel, show_elasticpp)
-        self._set_form_field_visible(self.chk_epp_damage_sel, show_epp_macro)
+        self._set_form_field_visible(self.chk_epp_damage_sel, show_epp_macro or show_elasticpp)
 
     def _set_form_field_visible(self, field_widget, visible):
         lbl = self._form_edit.labelForField(field_widget) if hasattr(self, "_form_edit") else None
         if lbl is not None:
             lbl.setVisible(visible)
         field_widget.setVisible(visible)
+
+    def _on_tmpl_mat_changed(self, mat_type=None):
+        mt = mat_type if mat_type is not None else self.cmb_mat_tmpl.currentText()
+        is_msc2d = self._is_msc2d_type(mt)
+        show_basic = not is_msc2d
+        mt_l = str(mt or "").strip().lower()
+        show_yield = ("elasticppgap" in mt_l) or self._is_simple_spring_type(mt)
+
+        for widget in [self.sb_kn_tmpl, self.sb_kt_tmpl, self.sb_gap_tmpl, self.sb_eta_tmpl]:
+            lbl = self._form_tmpl.labelForField(widget) if hasattr(self, "_form_tmpl") else None
+            if lbl is not None:
+                lbl.setVisible(show_basic)
+            widget.setVisible(show_basic)
+
+        lbl_y = self._form_tmpl.labelForField(self.sb_yield_tmpl) if hasattr(self, "_form_tmpl") else None
+        if lbl_y is not None:
+            lbl_y.setVisible(show_yield)
+        self.sb_yield_tmpl.setVisible(show_yield)
+
+        if hasattr(self, "_tmpl_auto_wrap"):
+            self._tmpl_auto_wrap.setVisible(show_basic)
+
+    def _run_preview(self):
+        vals = self._editor_values()
+        amp = float(self.sb_preview_amp.value())
+        cycles = int(self.sb_preview_cycles.value())
+        activate_cmd = "true"
+        python_cmd = "python3"
+        is_windows = sys.platform.startswith("win")
+        try:
+            mw = self.window()
+            if hasattr(mw, "run") and callable(getattr(mw.run, "get_activate", None)):
+                activate_cmd = mw.run.get_activate()
+            if hasattr(mw, "run") and hasattr(mw.run, "python_cmd"):
+                python_cmd = str(getattr(mw.run, "python_cmd") or "python3")
+        except Exception:
+            pass
+
+        self.btn_preview.setEnabled(False)
+        self.lbl_preview_status.setStyleSheet(f"color:{TXTS};")
+        self.lbl_preview_status.setText("Running preview...")
+
+        self._preview_worker = PreviewWorker(vals, amp, cycles, activate_cmd, is_windows, python_cmd)
+        self._preview_worker.finished.connect(self._on_preview_done)
+        self._preview_worker.error.connect(self._on_preview_error)
+        self._preview_worker.start()
+
+    def _on_preview_done(self, result):
+        slip = np.array(result.get("slip", []), dtype=float)
+        force = np.array(result.get("force", []), dtype=float)
+
+        self.ax_prev.cla()
+        self.ax_prev.set_facecolor(BG_PANEL)
+        self.ax_prev.tick_params(colors=TXTS, labelsize=9)
+        self.ax_prev.xaxis.label.set_color(TXT)
+        self.ax_prev.yaxis.label.set_color(TXT)
+        for s in self.ax_prev.spines.values():
+            s.set_edgecolor(BORDER)
+        self.ax_prev.grid(True, alpha=0.15, color=BORDER, linestyle="--")
+        self.ax_prev.plot(slip, force, color=C1, lw=1.8)
+        self.ax_prev.set_title("Force vs Displacement", color=C1)
+        self.ax_prev.set_xlabel("Displacement (m)")
+        self.ax_prev.set_ylabel("Force (kN)")
+
+        self.preview_canvas.draw_idle()
+        self.btn_preview.setEnabled(True)
+        self.lbl_preview_status.setStyleSheet(f"color:{C2};")
+        self.lbl_preview_status.setText("Preview ready")
+
+    def _on_preview_error(self, msg):
+        self.btn_preview.setEnabled(True)
+        self.lbl_preview_status.setStyleSheet(f"color:{C3};")
+        self.lbl_preview_status.setText(str(msg)[:120])
 
     def _set_msc2d_defaults_template_all(self):
         """
@@ -2419,7 +2766,7 @@ class CrackMaterialTab(QWidget):
             mat_type=self.cmb_mat_tmpl.currentText(),
             kn=self.sb_kn_tmpl.value(), kt=self.sb_kt_tmpl.value(),
             gap=self.sb_gap_tmpl.value(), eta=self.sb_eta_tmpl.value(),
-            yield_disp=self.sb_gap_tmpl.value(),
+            yield_disp=self.sb_yield_tmpl.value(),
             epp_damage=False,
         )
         if self._is_msc2d_type(vals["mat_type"]):
@@ -2570,6 +2917,7 @@ class CrackMaterialTab(QWidget):
         for r in range(self.tbl.rowCount()):
             row_vals = self._row_values(r)
             row_vals.update(vals)
+            row_vals["yield_disp"] = vals.get("yield_disp", row_vals.get("yield_disp", row_vals.get("gap", 0.001)))
             self._set_row_values(r, row_vals)
         if self.tbl.rowCount():
             self.tbl.selectRow(0)
@@ -2755,6 +3103,15 @@ QComboBox QAbstractItemView {{
 
         self.cmb_type = QComboBox()
         self.cmb_type.addItems(["DisplacementControl", "LoadControl"])
+        self.sb_ref_node = QSpinBox()
+        self.sb_ref_node.setRange(0, 999999)
+        self.sb_ref_node.setValue(0)
+        self.sb_ref_node.setToolTip(
+            "Node ID to use as displacement control reference. Set to 0 to auto-select from loaded nodes.")
+        self.cmb_ref_dof = QComboBox()
+        self.cmb_ref_dof.addItems(["Auto", "DOF 1 (X)", "DOF 2 (Y)"])
+        self.cmb_ref_dof.setToolTip(
+            "Degree of freedom to control. Auto selects based on dominant load direction.")
         self.cmb_system = QComboBox()
         self.cmb_system.addItems(["UmfPack", "BandGeneral", "ProfileSPD"])
         self.cmb_constraints = QComboBox()
@@ -2769,17 +3126,21 @@ QComboBox QAbstractItemView {{
         self.sb_li  = dsb(0.01,   1e-7, 1.0, 6, 0.01,
                           tip="Load increment fraction per step (LoadControl, 0.01 = 1% of total)")
         self.cmb_alg = QComboBox()
-        self.cmb_alg.addItems(["NewtonLineSearch", "Newton", "KrylovNewton", "ModifiedNewton"])
+        self.cmb_alg.addItems(["KrylovNewton", "NewtonLineSearch", "Newton", "ModifiedNewton"])
         self.sb_tol  = dsb(1e-8,  1e-14, 1e-2, 12, 1e-9, tip="Convergence tolerance (NormUnbalance)")
         self.sb_iter = isb(400, 1, 5000, tip="Max iterations per step")
-        self.sb_lam  = dsb(50., 0.1, 1e9, 1, 5., tip="Stop if load factor exceeds this value")
+        self.sb_lam  = dsb(1., 0.1, 1e9, 1, 0.1, tip="Stop if load factor exceeds this value")
 
         for w in [self.cmb_type, self.cmb_system, self.cmb_constraints, self.cmb_numberer, self.cmb_alg]:
             w.setMinimumHeight(32)
+        self.sb_ref_node.setMinimumHeight(32)
+        self.cmb_ref_dof.setMinimumHeight(32)
         for w in [self.sb_di, self.sb_tgt, self.sb_li, self.sb_tol, self.sb_iter, self.sb_lam]:
             w.setMinimumHeight(32)
 
         form.addRow("Analysis type:",       self.cmb_type)
+        form.addRow("Control node (0 = auto):", self.sb_ref_node)
+        form.addRow("Control DOF:", self.cmb_ref_dof)
         form.addRow("Equation solver:",     self.cmb_system)
         form.addRow("Constraint handler:",  self.cmb_constraints)
         form.addRow("Numberer:",            self.cmb_numberer)
@@ -2817,7 +3178,7 @@ QComboBox QAbstractItemView {{
         note = mk_lbl(
             "DisplacementControl: applies incremental displacement at the load DOF.\n"
             "LoadControl: applies incremental force up to the pattern load.\n"
-            "Algorithm fallback order: NewtonLineSearch → KrylovNewton → ModifiedNewton → Newton.\n"
+            "Algorithm fallback order: KrylovNewton → NewtonLineSearch → ModifiedNewton → Newton.\n"
             "Step size is halved up to 12 times if convergence fails.", "sub")
         note.setWordWrap(True)
         outer.addWidget(note)
@@ -2827,9 +3188,34 @@ QComboBox QAbstractItemView {{
         root.addWidget(scroll)
 
         self.cmb_type.currentTextChanged.connect(self._update_protocol_labels)
+        self.cmb_type.currentTextChanged.connect(self._on_analysis_type_changed)
         self.rb_monotonic.toggled.connect(self._update_protocol_visibility)
         self._update_protocol_labels()
         self._update_protocol_visibility()
+        self._on_analysis_type_changed(self.cmb_type.currentText())
+
+    def _on_analysis_type_changed(self, mode):
+        is_disp = (mode == "DisplacementControl")
+        self.sb_di.setEnabled(is_disp)
+        self.sb_tgt.setEnabled(is_disp)
+        self.sb_ref_node.setEnabled(is_disp)
+        self.cmb_ref_dof.setEnabled(is_disp)
+        self.sb_li.setEnabled(not is_disp)
+
+        if is_disp:
+            self.sb_di.setToolTip("Displacement increment per step (m, DisplacementControl)")
+            self.sb_tgt.setToolTip("Target total displacement (m, DisplacementControl)")
+            self.sb_ref_node.setToolTip(
+                "Node ID to use as displacement control reference. Set to 0 to auto-select from loaded nodes.")
+            self.cmb_ref_dof.setToolTip(
+                "Degree of freedom to control. Auto selects based on dominant load direction.")
+            self.sb_li.setToolTip("Not used in DisplacementControl mode")
+        else:
+            self.sb_di.setToolTip("Not used in LoadControl mode")
+            self.sb_tgt.setToolTip("Not used in LoadControl mode")
+            self.sb_ref_node.setToolTip("Not used in LoadControl mode")
+            self.cmb_ref_dof.setToolTip("Not used in LoadControl mode")
+            self.sb_li.setToolTip("Load increment fraction per step (LoadControl, 0.01 = 1% of total)")
 
     def _update_protocol_labels(self):
         units = "m" if self.cmb_type.currentText() == "DisplacementControl" else "load factor"
@@ -2844,6 +3230,8 @@ QComboBox QAbstractItemView {{
         
         return {
             "analysis_type": self.cmb_type.currentText(),
+            "ref_node": self.sb_ref_node.value(),
+            "ref_dof_mode": self.cmb_ref_dof.currentText(),
             "solver_system": self.cmb_system.currentText(),
             "constraint_handler": self.cmb_constraints.currentText(),
             "numberer": self.cmb_numberer.currentText(),
@@ -2864,6 +3252,8 @@ QComboBox QAbstractItemView {{
     def set_project_state(self, state):
         
         self.cmb_type.setCurrentText(state.get("analysis_type", "DisplacementControl"))
+        self.sb_ref_node.setValue(int(state.get("ref_node", 0)))
+        self.cmb_ref_dof.setCurrentText(state.get("ref_dof_mode", "Auto"))
         self.cmb_system.setCurrentText(state.get("solver_system", "UmfPack"))
         self.cmb_constraints.setCurrentText(state.get("constraint_handler", "Plain"))
         self.cmb_numberer.setCurrentText(state.get("numberer", "RCM"))
@@ -2873,7 +3263,7 @@ QComboBox QAbstractItemView {{
         self.cmb_alg.setCurrentText(state.get("algorithm", "NewtonLineSearch"))
         self.sb_tol.setValue(float(state.get("tol", 1e-8)))
         self.sb_iter.setValue(int(state.get("max_iter", 400)))
-        self.sb_lam.setValue(float(state.get("max_load_factor", 50.0)))
+        self.sb_lam.setValue(float(state.get("max_load_factor", 1.0)))
         protocol = state.get("loading_protocol", "monotonic")
         self.rb_reversed_cyclic.setChecked(protocol == "reversed-cyclic")
         self.rb_monotonic.setChecked(protocol != "reversed-cyclic")
@@ -3854,10 +4244,9 @@ def _build_analysis(ops, p, at, ln, dof, incr, alg,
 def _step_with_recovery(ops, p, at, ln, dof, incr, step_num=0):
     base_tol = float(p.get('tol', 1e-8))
     base_iter = int(p.get('max_iter', 400))
-    pref_alg = p.get('algorithm', 'NewtonLineSearch')
     combos = [
-        (pref_alg,        'UmfPack',     'Plain',          'NormDispIncr', 1.0,   1.0),
-        ('KrylovNewton',  'UmfPack',     'Plain',          'NormDispIncr', 10.0,  2.0),
+        ('KrylovNewton',  'UmfPack',     'Plain',          'NormDispIncr', 1.0,   1.0),
+        ('NewtonLineSearch','UmfPack',   'Plain',          'NormDispIncr', 10.0,  2.0),
         ('ModifiedNewton','BandGeneral', 'Transformation', 'NormUnbalance', 10.0,  2.0),
         ('Newton',        'BandGeneral', 'Transformation', 'NormUnbalance', 100.0, 3.0),
     ]
@@ -4141,7 +4530,7 @@ def run_model_2d(p):
                 mat_t = mat_id * 2
                 mat_n = mat_id * 2 + 1
 
-                if 'simplespring' in mat_type.lower().replace(' ', ''):
+                if ('simplespring' in mat_type.lower().replace(' ', '')) or ('calvi2015' in mat_type.lower().replace(' ', '')):
                     sp_Kn = float(cm.get('sp_Kn', cm.get('kn', 500.0)))
                     sp_Ks = float(cm.get('sp_Ks', cm.get('kt', 200.0)))
                     sp_gap = float(cm.get('sp_gap', 0.0))
@@ -4150,7 +4539,7 @@ def run_model_2d(p):
                     except Exception:
                         ops.uniaxialMaterial('Elastic', mat_n, sp_Kn)
                     ops.uniaxialMaterial('Elastic', mat_t, sp_Ks)
-                    _log(f"  [MAT] SimpleSpring crack {ci}: Kn={sp_Kn}, Ks={sp_Ks}, gap={sp_gap}")
+                    _log(f"  [MAT] Calvi2015 (EPP-normal / Elastic-shear) crack {ci}: Kn={sp_Kn}, Ks={sp_Ks}, gap={sp_gap}")
                 elif 'eppgap' in mat_type.lower() or 'elasticppgap' in mat_type.lower():
                     ops.uniaxialMaterial('ElasticPPGap', mat_t, kt, kt * 5., gap, eta)
                     ops.uniaxialMaterial('ElasticPPGap', mat_n, kn, kn * 10., 0.0, eta)
@@ -4178,6 +4567,108 @@ def run_model_2d(p):
 
             _log(f"crack elements ready: {n_mscrack_ok} MSC2D, {n_fallback} EPPGap fallback, "
                  f"{len(crack_pairs) - n_mscrack_ok - n_fallback} standard")
+
+        # add reinforcement truss elements crossing selected crack rows
+        rebar_definitions = list(p.get('rebar_definitions', []))
+        elt_base_rebar = elt_base_macro + 500
+        rebar_mat_base = 90000
+        # ── ID collision guards ──
+        max_macro_elt = elt_base_macro + len(crack_pairs) * 5
+        if max_macro_elt >= elt_base_rebar:
+            elt_base_rebar = max_macro_elt + 100
+            _log(f"WARNING: rebar element base adjusted to {elt_base_rebar} to avoid collision with macro crack elements")
+        _log(f"Rebar element IDs: {elt_base_rebar} to {elt_base_rebar + len(rebar_definitions)}")
+        max_crack_mat = 10000 + len(crack_pairs) * 2 + 1
+        if max_crack_mat >= rebar_mat_base:
+            rebar_mat_base = max_crack_mat + 1000
+            _log(f"WARNING: rebar material base adjusted to {rebar_mat_base} to avoid collision with crack material IDs")
+        _log(f"Rebar material IDs: {rebar_mat_base} to {rebar_mat_base + len(rebar_definitions)}")
+        if rebar_definitions:
+            crack_pairs_by_y = {}
+            for cp in crack_pairs:
+                y_key = round(float(cp[2]), 8)
+                crack_pairs_by_y.setdefault(y_key, []).append(cp)
+            for y_key, cps in crack_pairs_by_y.items():
+                crack_pairs_by_y[y_key] = sorted(cps, key=lambda it: float(it[3]))
+
+            uniform_groups = {}
+            for ridx, rb in enumerate(rebar_definitions):
+                try:
+                    ry = round(float(rb.get('crack_y', 0.0)), 8)
+                except Exception:
+                    continue
+                if rb.get('x', None) is None:
+                    uniform_groups.setdefault(ry, []).append(ridx)
+
+            uniform_targets = {}
+            for ry, idxs in uniform_groups.items():
+                cps = crack_pairs_by_y.get(ry, [])
+                if not cps:
+                    continue
+                x_vals = [float(cp[3]) for cp in cps]
+                x_min = min(x_vals)
+                x_max = max(x_vals)
+                span = max(x_max - x_min, 0.0)
+                n_uniform = len(idxs)
+                for j, ridx in enumerate(idxs, start=1):
+                    if span <= 1e-12:
+                        uniform_targets[ridx] = x_min
+                    else:
+                        uniform_targets[ridx] = x_min + span * (j / (n_uniform + 1.0))
+
+            n_rebar_created = 0
+            for ridx, rb in enumerate(rebar_definitions):
+                try:
+                    crack_y = round(float(rb.get('crack_y', 0.0)), 8)
+                    As = max(float(rb.get('As', 0.0)), 1e-12)
+                    Es = max(float(rb.get('Es', 200000.0)), 1e-9)
+                    fy = max(float(rb.get('fy', 500.0)), 1e-9)
+                    L_unb = float(rb.get('L_unb', 0.0))
+                    x_raw = rb.get('x', None)
+                    x_target = uniform_targets.get(ridx, None if x_raw is None else float(x_raw))
+                except Exception as e_rb:
+                    _log(f"rebar skipped #{ridx + 1}: invalid definition ({e_rb})")
+                    continue
+
+                cps = crack_pairs_by_y.get(crack_y, [])
+                if not cps:
+                    _log(f"rebar skipped #{ridx + 1}: no crack pairs found at y={crack_y:.6f}")
+                    continue
+
+                if x_target is None:
+                    cp_sel = cps[len(cps) // 2]
+                else:
+                    cp_sel = min(cps, key=lambda it: abs(float(it[3]) - float(x_target)))
+
+                nb = int(cp_sel[0])
+                na = int(cp_sel[1])
+                x_sel = float(cp_sel[3])
+
+                if L_unb <= 0.0:
+                    _log(
+                        f"WARNING: rebar at crack_y={crack_y:.6f} x={x_sel:.6f} skipped — L_unb must be > 0"
+                    )
+                    continue
+
+                As_m2 = As * 1e-6
+                Es_kNm2 = Es * 1000.0
+                fy_kNm2 = fy * 1000.0
+                k_eff = Es_kNm2 * As_m2 / L_unb
+                Fy_kN = fy_kNm2 * As_m2
+
+                rebar_mat_id = rebar_mat_base + ridx
+                rebar_elt_id = elt_base_rebar + ridx
+
+                ops.uniaxialMaterial('Steel01', rebar_mat_id, Fy_kN, k_eff, 0.01)
+                ops.element('Truss', rebar_elt_id, nb, na, 1.0, rebar_mat_id)
+                n_rebar_created += 1
+                _log(
+                    f"Rebar truss elt={rebar_elt_id} crack_y={crack_y:.6f} x={x_sel:.6f} "
+                    f"As={As:.3f}mm2 Es={Es:.3f}MPa fy={fy:.3f}MPa L_unb={L_unb:.4f}m "
+                    f"k_eff={k_eff:.1f}kN/m"
+                )
+
+            _log(f"rebar truss elements created: {n_rebar_created}/{len(rebar_definitions)}")
 
         # apply nodal loads
         load_nodes = p.get('load_nodes', {})
@@ -4214,6 +4705,15 @@ def run_model_2d(p):
                 at = 'LoadControl'; at_auto_switched = True
             else:
                 _log(f"control mode: DisplacementControl on node {ref_nid} dof {ref_dof}")
+
+        if p.get('ref_node', 0) > 0:
+            ref_nid = int(p['ref_node'])
+            ref_dof_mode = str(p.get('ref_dof_mode', 'Auto'))
+            if ref_dof_mode == 'DOF 1 (X)':
+                ref_dof = 1
+            elif ref_dof_mode == 'DOF 2 (Y)':
+                ref_dof = 2
+            _log(f"[CONTROL] user-specified ref_nid={ref_nid} ref_dof={ref_dof}")
 
         if at == 'LoadControl':
             for nid_str, (Fx, Fy) in load_nodes.items():
