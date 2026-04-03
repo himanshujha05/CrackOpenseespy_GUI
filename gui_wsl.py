@@ -398,6 +398,7 @@ class PanelMeshCanvas(QWidget):
     MODE_CRACK  : click at any Y to add / remove a pending crack line
     """
     node_clicked         = pyqtSignal(int)
+    box_selection_changed = pyqtSignal(list)
     crack_y_added        = pyqtSignal(float)
     crack_y_removed      = pyqtSignal(float)
     hand_strokes_changed = pyqtSignal()
@@ -406,6 +407,7 @@ class PanelMeshCanvas(QWidget):
     MODE_SELECT = "select"
     MODE_CRACK  = "crack"
     MODE_DRAW   = "draw"
+    MODE_BOX    = "box"
 
     def __init__(self):
         """
@@ -423,15 +425,21 @@ class PanelMeshCanvas(QWidget):
         self.load_nodes   = {}       # {nid: (Fx, Fy)}
         self.selected_node = None
         self.show_ids     = True
+        self.show_elem_ids = False
         self.mode         = self.MODE_SELECT
         self._hover_model = None
         self._pending_crack_ys = []
         self._below_nodes = set()    # nids on the BELOW side of cracks (orange)
         self._above_nodes = set()    # nids on the ABOVE side of cracks (violet)
         self.show_crack_links = True # draw short lines between each (below,above) pair
+        self.show_bcs   = True
+        self.show_loads = True
         self.hand_strokes = []       # list of completed strokes; each is [(x,y), ...] model coords
         self._cur_stroke  = []       # stroke currently being drawn
         self._drawing     = False    # True while LMB is held in MODE_DRAW
+        self._box_start = None   # (px, py) pixel coords where drag started
+        self._box_end   = None   # (px, py) current drag end
+        self._box_selected = set()  # nids selected by the box
         self._bg_image    = QImage()
         self._bg_path     = ""
         self._highlighted_pairs = set()
@@ -495,8 +503,12 @@ class PanelMeshCanvas(QWidget):
 
     def set_mode(self, mode):
         self.mode = mode
-        self.setCursor(Qt.CrossCursor if mode in (self.MODE_CRACK, self.MODE_DRAW)
-                       else Qt.ArrowCursor)
+        if mode == self.MODE_DRAW:
+            self.setCursor(Qt.CrossCursor)
+        elif mode == self.MODE_CRACK:
+            self.setCursor(Qt.UpArrowCursor)
+        else:
+            self.setCursor(Qt.ArrowCursor)
         self.update()
 
     def set_background_image(self, image_path):
@@ -589,9 +601,13 @@ class PanelMeshCanvas(QWidget):
             mx, my = self._to_model(px, py)
             self._cur_stroke = [(mx, my)]
             self.update()
+        elif self.mode == self.MODE_BOX:
+            self._box_start = (px, py); self._box_end = (px, py); self.update()
 
     def mouseMoveEvent(self, event):
         self._hover_model = self._to_model(event.x(), event.y())
+        if self.mode == self.MODE_BOX and self._box_start:
+            self._box_end = (event.x(), event.y()); self.update()
         if self.mode == self.MODE_DRAW and self._drawing:
             mx, my = self._hover_model
             if (not self._cur_stroke or
@@ -601,6 +617,17 @@ class PanelMeshCanvas(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, event):
+        if self.mode == self.MODE_BOX and self._box_start and event.button() == Qt.LeftButton:
+            x0 = min(self._box_start[0], self._box_end[0])
+            x1 = max(self._box_start[0], self._box_end[0])
+            y0 = min(self._box_start[1], self._box_end[1])
+            y1 = max(self._box_start[1], self._box_end[1])
+            selected = [nid for nid, (nx_, ny_) in self.nodes.items()
+                        if x0 <= self._to_px(nx_, ny_)[0] <= x1
+                        and y0 <= self._to_px(nx_, ny_)[1] <= y1]
+            self._box_selected = set(selected)
+            self.box_selection_changed.emit(selected)
+            self._box_start = None; self._box_end = None; self.update()
         if (self.mode == self.MODE_DRAW and event.button() == Qt.LeftButton
                 and self._drawing):
             self._drawing = False
@@ -634,6 +661,16 @@ class PanelMeshCanvas(QWidget):
             path.moveTo(*coords[0]); path.lineTo(*coords[1])
             path.lineTo(*coords[2]); path.closeSubpath()
             p.drawPath(path)
+
+        if self.show_elem_ids and len(self.tris) <= 400:
+            p.setFont(QFont("Consolas", 6))
+            p.setPen(QPen(QColor(C4), 1))
+            for eid, n1, n2, n3 in self.tris:
+                if n1 in self.nodes and n2 in self.nodes and n3 in self.nodes:
+                    cx = (self.nodes[n1][0] + self.nodes[n2][0] + self.nodes[n3][0]) / 3
+                    cy = (self.nodes[n1][1] + self.nodes[n2][1] + self.nodes[n3][1]) / 3
+                    ppx, ppy = self._to_px(cx, cy)
+                    p.drawText(ppx - 4, ppy + 3, str(eid))
 
         # Crack lines (red thick) + edge-snap indicator
         if self.crack_pairs:
@@ -715,30 +752,32 @@ class PanelMeshCanvas(QWidget):
                 p.drawText(ppx + 5, ppy - 2, str(nid))
 
         # Load arrows
-        for nid, (Fx, Fy) in self.load_nodes.items():
-            if nid not in self.nodes: continue
-            ppx, ppy = self._to_px(*self.nodes[nid])
-            if abs(Fy) > 1e-10:
-                s = -1 if Fy > 0 else 1
-                self._arrow(p, ppx, ppy, 0, s * 22, C3)
-            if abs(Fx) > 1e-10:
-                s = 1 if Fx > 0 else -1
-                self._arrow(p, ppx, ppy, s * 22, 0, C3)
+        if self.show_loads:
+            for nid, (Fx, Fy) in self.load_nodes.items():
+                if nid not in self.nodes: continue
+                ppx, ppy = self._to_px(*self.nodes[nid])
+                if abs(Fy) > 1e-10:
+                    s = -1 if Fy > 0 else 1
+                    self._arrow(p, ppx, ppy, 0, s * 22, C3)
+                if abs(Fx) > 1e-10:
+                    s = 1 if Fx > 0 else -1
+                    self._arrow(p, ppx, ppy, s * 22, 0, C3)
 
         # BC supports (triangle hatch at bottom)
-        for nid, (fx, fy) in self.bc_nodes.items():
-            if nid not in self.nodes: continue
-            ppx, ppy = self._to_px(*self.nodes[nid])
-            p.setPen(QPen(QColor(C4), 1))
-            p.setBrush(Qt.NoBrush)
-            if fy:
-                path = QPainterPath()
-                path.moveTo(ppx, ppy); path.lineTo(ppx - 6, ppy + 10); path.lineTo(ppx + 6, ppy + 10)
-                path.closeSubpath(); p.drawPath(path)
-            if fx:
-                path = QPainterPath()
-                path.moveTo(ppx, ppy); path.lineTo(ppx - 10, ppy - 6); path.lineTo(ppx - 10, ppy + 6)
-                path.closeSubpath(); p.drawPath(path)
+        if self.show_bcs:
+            for nid, (fx, fy) in self.bc_nodes.items():
+                if nid not in self.nodes: continue
+                ppx, ppy = self._to_px(*self.nodes[nid])
+                p.setPen(QPen(QColor(C4), 1))
+                p.setBrush(Qt.NoBrush)
+                if fy:
+                    path = QPainterPath()
+                    path.moveTo(ppx, ppy); path.lineTo(ppx - 6, ppy + 10); path.lineTo(ppx + 6, ppy + 10)
+                    path.closeSubpath(); p.drawPath(path)
+                if fx:
+                    path = QPainterPath()
+                    path.moveTo(ppx, ppy); path.lineTo(ppx - 10, ppy - 6); path.lineTo(ppx - 10, ppy + 6)
+                    path.closeSubpath(); p.drawPath(path)
 
         # Crack-mode hover line
         if self.mode == self.MODE_CRACK and self._hover_model:
@@ -774,6 +813,15 @@ class PanelMeshCanvas(QWidget):
             pts = [self._to_px(x, y) for x, y in self._cur_stroke]
             for i in range(len(pts) - 1):
                 p.drawLine(pts[i][0], pts[i][1], pts[i+1][0], pts[i+1][1])
+
+        if self.mode == self.MODE_BOX and self._box_start and self._box_end:
+            p.setPen(QPen(QColor(C1), 1, Qt.DashLine))
+            p.setBrush(QBrush(QColor(C1 + "33")))
+            rx = min(self._box_start[0], self._box_end[0])
+            ry = min(self._box_start[1], self._box_end[1])
+            rw = abs(self._box_end[0] - self._box_start[0])
+            rh = abs(self._box_end[1] - self._box_start[1])
+            p.drawRect(rx, ry, rw, rh)
 
         # Stats bar
         p.setPen(QPen(QColor(C4), 1)); p.setFont(QFont("Consolas", 8))
@@ -939,8 +987,14 @@ class GeometryTab(QWidget):
             "Check mesh integrity: degenerate triangles, crack pair validity,\n"
             "connectivity on both sides of each crack")
 
+        self.btn_clear_mesh = QPushButton("Clear Mesh")
+        self.btn_clear_mesh.setObjectName("danger")
+        self.btn_clear_mesh.setMinimumHeight(36)
+        self.btn_clear_mesh.setToolTip("Clear the current mesh, BCs, and loads from the canvas")
+
         btn_row.addWidget(self.btn_gen, stretch=2)
         btn_row.addWidget(self.btn_validate, stretch=1)
+        btn_row.addWidget(self.btn_clear_mesh, stretch=1)
         lv.addLayout(btn_row)
 
         # Mesh info label
@@ -970,8 +1024,13 @@ class GeometryTab(QWidget):
         self.btn_crack_mode.setObjectName("flat")
         self.btn_crack_mode.setCheckable(True)
         self.btn_crack_mode.setToolTip("Toggle crack placement mode: click canvas to add/remove crack Y")
+        self.btn_box_select = QPushButton("▭ Box Select")
+        self.btn_box_select.setObjectName("flat")
+        self.btn_box_select.setCheckable(True)
+        self.btn_box_select.setToolTip("Drag a box on the canvas to select multiple nodes")
         row_inp1.addWidget(self.txt_crack_y, stretch=1)
         row_inp1.addWidget(self.btn_crack_mode)
+        row_inp1.addWidget(self.btn_box_select)
         vc.addLayout(row_inp1)
         row_inp2 = QHBoxLayout()
         row_inp2.addWidget(mk_lbl("θ (deg):"))
@@ -1122,24 +1181,6 @@ class GeometryTab(QWidget):
         vld.addWidget(self.tbl_loads)
         lv.addWidget(grp_load)
 
-        # Coupled Load (gamma ratio)
-        grp_coupled = QGroupBox("Coupled Load (Shear-to-Normal Ratio)")
-        fc_c = QFormLayout(grp_coupled); fc_c.setSpacing(6)
-        self.chk_use_gamma = QCheckBox("Use gamma-coupled load mode")
-        self.sb_gamma = dsb(1.0, -10., 10., 3, 0.1,
-            tip="Load ratio gamma = V / N. Fy = N (normal), Fx = gamma*N (shear).\n"
-                "gamma=0: pure normal. gamma=1: equal shear and normal.")
-        self.sb_N_total = dsb(-100.0, -1e6, 1e6, 1, 10.,
-            tip="Total normal force N (kN) applied to top nodes. Negative = compression.")
-        self.btn_apply_coupled = QPushButton("Apply Coupled Load")
-        self.btn_apply_coupled.setObjectName("amber")
-        fc_c.addRow(self.chk_use_gamma)
-        fc_c.addRow("gamma (shear ratio):", self.sb_gamma)
-        fc_c.addRow("N total (kN):", self.sb_N_total)
-        fc_c.addRow(self.btn_apply_coupled)
-        lv.addWidget(grp_coupled)
-        self.btn_apply_coupled.clicked.connect(self._apply_coupled_load)
-
         # Reinforcement (Crossing Cracks)
         grp_rebar = QGroupBox("Reinforcement (Crossing Cracks)")
         vr = QVBoxLayout(grp_rebar); vr.setSpacing(6)
@@ -1212,12 +1253,21 @@ class GeometryTab(QWidget):
         self.lbl_canvas_mode.setStyleSheet(f"color:{C4};font-weight:bold;")
         self.chk_show_ids = QCheckBox("Node IDs")
         self.chk_show_ids.setChecked(True)
+        self.chk_show_elem_ids = QCheckBox("Elem IDs")
+        self.chk_show_elem_ids.setChecked(False)
         self.chk_show_crack_links = QCheckBox("Crack Links")
         self.chk_show_crack_links.setChecked(True)
+        self.chk_show_bcs = QCheckBox("BCs")
+        self.chk_show_bcs.setChecked(True)
+        self.chk_show_loads = QCheckBox("Loads")
+        self.chk_show_loads.setChecked(True)
         mode_row.addWidget(self.lbl_canvas_hint, stretch=1)
         mode_row.addWidget(self.lbl_canvas_mode)
         mode_row.addWidget(self.chk_show_ids)
+        mode_row.addWidget(self.chk_show_elem_ids)
         mode_row.addWidget(self.chk_show_crack_links)
+        mode_row.addWidget(self.chk_show_bcs)
+        mode_row.addWidget(self.chk_show_loads)
         rv.addLayout(mode_row)
         self.canvas = PanelMeshCanvas()
         rv.addWidget(self.canvas, stretch=1)
@@ -1235,15 +1285,19 @@ class GeometryTab(QWidget):
         self._bg_image_path = ""
         self._snap_messages = []
         self._syncing_mesh_controls = False
+        self._box_selected_nodes = []
 
         # wire
         self.btn_gen.clicked.connect(self._generate)
         self.btn_validate.clicked.connect(self._validate_mesh)
+        self.btn_clear_mesh.clicked.connect(self._clear_mesh)
         self.btn_upload_img.clicked.connect(self._upload_background_image)
         self.btn_clear_img.clicked.connect(self._clear_background_image)
         self.btn_crack_mode.toggled.connect(self._toggle_crack_mode)
+        self.btn_box_select.toggled.connect(self._toggle_box_mode)
         self.txt_crack_y.editingFinished.connect(self._sync_crack_ys_from_text)
         self.canvas.node_clicked.connect(self._on_node_clicked)
+        self.canvas.box_selection_changed.connect(self._on_box_selection_changed)
         self.canvas.crack_y_added.connect(self._add_crack_y)
         self.canvas.crack_y_removed.connect(self._remove_crack_y)
         self.canvas.hand_strokes_changed.connect(self._on_hand_strokes_changed)
@@ -1260,7 +1314,10 @@ class GeometryTab(QWidget):
         self.btn_apply_load.clicked.connect(self._apply_load_to_node)
         self.btn_clear_node_load.clicked.connect(self._clear_node_load)
         self.chk_show_ids.toggled.connect(self._toggle_ids)
+        self.chk_show_elem_ids.toggled.connect(self._toggle_elem_ids)
         self.chk_show_crack_links.toggled.connect(self._toggle_crack_links)
+        self.chk_show_bcs.toggled.connect(lambda on: setattr(self.canvas, 'show_bcs', on) or self.canvas.update())
+        self.chk_show_loads.toggled.connect(lambda on: setattr(self.canvas, 'show_loads', on) or self.canvas.update())
         for sb in [self.sb_W, self.sb_H]:
             sb.valueChanged.connect(self._on_dim_change)
             sb.valueChanged.connect(self._on_mesh_control_changed)
@@ -1414,7 +1471,13 @@ class GeometryTab(QWidget):
     def _toggle_crack_mode(self, on):
         if on:
             self._set_canvas_mode(PanelMeshCanvas.MODE_CRACK)
-        elif not self.btn_hand_draw.isChecked():
+        elif not self.btn_hand_draw.isChecked() and not self.btn_box_select.isChecked():
+            self._set_canvas_mode(PanelMeshCanvas.MODE_SELECT)
+
+    def _toggle_box_mode(self, on):
+        if on:
+            self._set_canvas_mode(PanelMeshCanvas.MODE_BOX)
+        elif not self.btn_hand_draw.isChecked() and not self.btn_crack_mode.isChecked():
             self._set_canvas_mode(PanelMeshCanvas.MODE_SELECT)
 
     def _add_crack_y(self, y):
@@ -1532,26 +1595,41 @@ class GeometryTab(QWidget):
     def _toggle_hand_draw(self, on):
         if on:
             self._set_canvas_mode(PanelMeshCanvas.MODE_DRAW)
-        elif not self.btn_crack_mode.isChecked():
+        elif not self.btn_crack_mode.isChecked() and not self.btn_box_select.isChecked():
             self._set_canvas_mode(PanelMeshCanvas.MODE_SELECT)
 
     def _set_canvas_mode(self, mode):
         self.canvas.set_mode(mode)
         self.btn_crack_mode.blockSignals(True)
         self.btn_hand_draw.blockSignals(True)
+        self.btn_box_select.blockSignals(True)
         self.btn_crack_mode.setChecked(mode == PanelMeshCanvas.MODE_CRACK)
         self.btn_hand_draw.setChecked(mode == PanelMeshCanvas.MODE_DRAW)
+        self.btn_box_select.setChecked(mode == PanelMeshCanvas.MODE_BOX)
         self.btn_crack_mode.blockSignals(False)
         self.btn_hand_draw.blockSignals(False)
+        self.btn_box_select.blockSignals(False)
         if mode == PanelMeshCanvas.MODE_DRAW:
-            self.lbl_canvas_mode.setText("Mode: Draw")
+            self.lbl_canvas_mode.setText("Mode: ✏ Draw (drag to sketch crack)")
             self.lbl_canvas_hint.setText("Draw mode: drag to trace a crack; click Draw Crack again to return to Select.")
         elif mode == PanelMeshCanvas.MODE_CRACK:
-            self.lbl_canvas_mode.setText("Mode: Crack")
+            self.lbl_canvas_mode.setText("Mode: ➕ Crack (click to place/remove)")
             self.lbl_canvas_hint.setText("Crack mode: click canvas to add/remove crack line.")
+        elif mode == PanelMeshCanvas.MODE_BOX:
+            self.lbl_canvas_mode.setText("Mode: ▭ Box Select (drag to select nodes)")
+            self.lbl_canvas_hint.setText("Box mode: drag a rectangle to select multiple nodes for bulk BC/load operations.")
         else:
-            self.lbl_canvas_mode.setText("Mode: Select")
+            self.lbl_canvas_mode.setText("Mode: ↖ Select (click a node)")
             self.lbl_canvas_hint.setText("Select mode: click a node to assign BC / load")
+
+    def _on_box_selection_changed(self, nids):
+        self._box_selected_nodes = [int(nid) for nid in nids]
+        if self._box_selected_nodes:
+            self.lbl_sel_node.setText(f"{len(self._box_selected_nodes)} nodes selected by box.")
+            self.btn_apply_bc.setEnabled(True)
+            self.btn_apply_load.setEnabled(True)
+        else:
+            self.lbl_sel_node.setText("No node selected.")
 
     def _node_map_get(self, dct, nid, default):
         return dct.get(nid, dct.get(str(nid), default))
@@ -1785,30 +1863,23 @@ class GeometryTab(QWidget):
         self._load_nodes.clear()
         self.canvas.set_load_nodes(self._load_nodes); self._update_load_table()
 
-    def _apply_coupled_load(self):
-        if self._mesh_data is None:
-            QMessageBox.warning(self, "No Mesh", "Generate mesh first.")
+    def _clear_mesh(self):
+        ans = QMessageBox.question(self, "Clear Mesh",
+            "This will remove the mesh, all BCs, and all loads. Continue?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if ans != QMessageBox.Yes:
             return
-        H = self._mesh_data["H"]
-        top_nodes = [nid for nid, (x, y) in self._mesh_data["nodes"].items()
-                     if abs(y - H) < 1e-8]
-        if not top_nodes:
-            QMessageBox.warning(self, "No Top Nodes", "No nodes found at top edge.")
-            return
-        N_total = self.sb_N_total.value()
-        gamma = self.sb_gamma.value()
-        n = len(top_nodes)
-        Fy_each = N_total / n
-        Fx_each = gamma * N_total / n
+        self._mesh_data = None
+        self._bc_nodes.clear()
         self._load_nodes.clear()
-        for nid in top_nodes:
-            self._load_nodes[nid] = (Fx_each, Fy_each)
+        self.canvas.clear_mesh()
+        self.canvas.set_bc_nodes(self._bc_nodes)
         self.canvas.set_load_nodes(self._load_nodes)
+        self._update_bc_table()
         self._update_load_table()
-        QMessageBox.information(self, "Coupled Load Applied",
-            f"Applied to {n} top nodes:\n"
-            f"  Fy = {Fy_each:.3f} kN/node  (normal, N={N_total:.1f} kN)\n"
-            f"  Fx = {Fx_each:.3f} kN/node  (shear, gamma={gamma:.2f})")
+        self.lbl_mesh_info.setText("Mesh cleared.")
+        self.lbl_mesh_info.setStyleSheet(f"color:{TXTS};")
+        self.mesh_generated.emit()
 
     def _update_bc_table(self):
         items = sorted((int(nid), vals) for nid, vals in self._bc_nodes.items())
@@ -1828,6 +1899,9 @@ class GeometryTab(QWidget):
 
     def _toggle_ids(self, on):
         self.canvas.show_ids = on; self.canvas.update()
+
+    def _toggle_elem_ids(self, on):
+        self.canvas.show_elem_ids = on; self.canvas.update()
 
     def _toggle_crack_links(self, on):
         self.canvas.show_crack_links = on; self.canvas.update()
@@ -3168,11 +3242,25 @@ QComboBox QAbstractItemView {{
         self.sb_cycle_amplitude = dsb(0.005, 1e-6, 1e6, 6, 0.001, tip="Cycle amplitude in active control units")
         self.sb_cycle_scale = dsb(1.0, 0.1, 10.0, 2, 0.1, tip="Amplitude multiplier applied each cycle")
         self.sb_half_cycle_steps = isb(10, 1, 1000, tip="Analysis steps per half-cycle")
+        self.tbl_cycles = QTableWidget(0, 2)
+        self.tbl_cycles.setHorizontalHeaderLabels(["Amplitude", "Half-cycle steps"])
+        self.tbl_cycles.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tbl_cycles.setMaximumHeight(120)
+        self.btn_add_cycle    = QPushButton("+ Add Cycle");    self.btn_add_cycle.setObjectName("flat")
+        self.btn_remove_cycle = QPushButton("− Remove Last");  self.btn_remove_cycle.setObjectName("flat")
+        cycle_btn_row = QHBoxLayout()
+        cycle_btn_row.addWidget(self.btn_add_cycle)
+        cycle_btn_row.addWidget(self.btn_remove_cycle)
+        cycle_btn_row.addStretch()
+        cycle_btn_wrap = QWidget(); cycle_btn_wrap.setLayout(cycle_btn_row)
         flp.addRow("Protocol:", proto_wrap)
         flp.addRow("Number of cycles:", self.sb_cycle_count)
         flp.addRow("Amplitude per cycle:", self.sb_cycle_amplitude)
         flp.addRow("Amplitude increase:", self.sb_cycle_scale)
         flp.addRow("Steps per half-cycle:", self.sb_half_cycle_steps)
+        flp.addRow("Custom cycles:", self.tbl_cycles)
+        flp.addRow("", cycle_btn_wrap)
+        flp.addRow("", QWidget())   # spacer row
         outer.addWidget(grp_lp)
 
         note = mk_lbl(
@@ -3190,6 +3278,8 @@ QComboBox QAbstractItemView {{
         self.cmb_type.currentTextChanged.connect(self._update_protocol_labels)
         self.cmb_type.currentTextChanged.connect(self._on_analysis_type_changed)
         self.rb_monotonic.toggled.connect(self._update_protocol_visibility)
+        self.btn_add_cycle.clicked.connect(self._add_cycle_row)
+        self.btn_remove_cycle.clicked.connect(self._remove_last_cycle_row)
         self._update_protocol_labels()
         self._update_protocol_visibility()
         self._on_analysis_type_changed(self.cmb_type.currentText())
@@ -3223,8 +3313,32 @@ QComboBox QAbstractItemView {{
 
     def _update_protocol_visibility(self):
         on = self.rb_reversed_cyclic.isChecked()
-        for w in [self.sb_cycle_count, self.sb_cycle_amplitude, self.sb_cycle_scale, self.sb_half_cycle_steps]:
+        for w in [
+            self.sb_cycle_count, self.sb_cycle_amplitude, self.sb_cycle_scale,
+            self.sb_half_cycle_steps, self.tbl_cycles, self.btn_add_cycle, self.btn_remove_cycle,
+        ]:
             w.setEnabled(on)
+
+    def _add_cycle_row(self):
+        r = self.tbl_cycles.rowCount()
+        self.tbl_cycles.insertRow(r)
+        self.tbl_cycles.setItem(r, 0, QTableWidgetItem("0.005"))
+        self.tbl_cycles.setItem(r, 1, QTableWidgetItem("10"))
+
+    def _remove_last_cycle_row(self):
+        if self.tbl_cycles.rowCount() > 0:
+            self.tbl_cycles.removeRow(self.tbl_cycles.rowCount() - 1)
+
+    def _get_custom_cycles(self):
+        cycles = []
+        for r in range(self.tbl_cycles.rowCount()):
+            try:
+                amp   = float(self.tbl_cycles.item(r, 0).text())
+                steps = int(self.tbl_cycles.item(r, 1).text())
+                cycles.append({"amplitude": amp, "half_cycle_steps": steps})
+            except Exception:
+                pass
+        return cycles
 
     def get_params(self):
         
@@ -3247,6 +3361,7 @@ QComboBox QAbstractItemView {{
             "cycle_amplitude": self.sb_cycle_amplitude.value(),
             "cycle_amplitude_scale": self.sb_cycle_scale.value(),
             "steps_per_half_cycle": self.sb_half_cycle_steps.value(),
+            "custom_cycles": self._get_custom_cycles(),
         }
 
     def set_project_state(self, state):
@@ -3271,6 +3386,15 @@ QComboBox QAbstractItemView {{
         self.sb_cycle_amplitude.setValue(float(state.get("cycle_amplitude", 0.005)))
         self.sb_cycle_scale.setValue(float(state.get("cycle_amplitude_scale", 1.0)))
         self.sb_half_cycle_steps.setValue(int(state.get("steps_per_half_cycle", 10)))
+        self.tbl_cycles.setRowCount(0)
+        for cyc in state.get("custom_cycles", []) or []:
+            try:
+                r = self.tbl_cycles.rowCount()
+                self.tbl_cycles.insertRow(r)
+                self.tbl_cycles.setItem(r, 0, QTableWidgetItem(str(float(cyc.get("amplitude", 0.005)))))
+                self.tbl_cycles.setItem(r, 1, QTableWidgetItem(str(int(cyc.get("half_cycle_steps", 10)))))
+            except Exception:
+                pass
         self._update_protocol_labels()
         self._update_protocol_visibility()
 
@@ -4288,13 +4412,27 @@ def _build_loading_targets(p):
     protocol = str(p.get('loading_protocol', 'monotonic')).lower()
     if protocol != 'reversed-cyclic':
         return []
+    custom_cycles = p.get('custom_cycles', []) or []
+    if custom_cycles:
+        targets = []
+        for row in custom_cycles:
+            try:
+                amp = float(row.get('amplitude', 0.0))
+                half_steps = max(int(row.get('half_cycle_steps', p.get('steps_per_half_cycle', 10))), 1)
+            except Exception:
+                continue
+            for target in [amp, -amp, 0.0]:
+                targets.append((float(target), half_steps))
+        return targets
     cycle_count = max(int(p.get('cycle_count', 3)), 1)
     base_amp = float(p.get('cycle_amplitude', p.get('target_disp', 0.005)))
     amp_scale = max(float(p.get('cycle_amplitude_scale', 1.0)), 1e-9)
     amps = [base_amp * (amp_scale ** idx) for idx in range(cycle_count)]
     targets = []
     for amp in amps:
-        targets.extend([float(amp), -float(amp), 0.0])
+        half_steps = max(int(p.get('steps_per_half_cycle', 10)), 1)
+        for target in [float(amp), -float(amp), 0.0]:
+            targets.append((target, half_steps))
     return targets
 
 
@@ -4733,7 +4871,6 @@ def run_model_2d(p):
         active_constr = p.get('constraint_handler', 'Plain')
         protocol = str(p.get('loading_protocol', 'monotonic')).lower()
         cycle_targets = _build_loading_targets(p)
-        cycle_half_steps = max(int(p.get('steps_per_half_cycle', 10)), 1)
 
         def collect():
             disp_l.append(ops.nodeDisp(ref_nid, ref_dof))
@@ -4789,9 +4926,9 @@ def run_model_2d(p):
 
         if protocol == 'reversed-cyclic' and cycle_targets:
             collect()
-            _log(f"cyclic protocol: {len(cycle_targets)} targets, {cycle_half_steps} half-cycle steps")
+            _log(f"cyclic protocol: {len(cycle_targets)} targets")
             st = 0
-            for target in cycle_targets:
+            for target, cycle_half_steps in cycle_targets:
                 if failed:
                     break
                 try:
