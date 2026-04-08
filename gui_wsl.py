@@ -183,10 +183,12 @@ def sep():
 class SpinboxWheelEventFilter(QObject):
     """Prevent mouse wheel from changing numeric inputs while scrolling panes."""
     def eventFilter(self, obj, event):
-        if event.type() == QEvent.Wheel and isinstance(obj, QAbstractSpinBox):
-            event.ignore()
-            return True
-        return super().eventFilter(obj, event)
+        if event.type() == QEvent.Wheel:
+            from PyQt5.QtWidgets import QAbstractSpinBox, QComboBox
+            if isinstance(obj, (QAbstractSpinBox, QComboBox)):
+                event.ignore()
+                return True
+        return False
 
 def snap_crack_y(y, H, ny, allow_edge=True):
     """
@@ -2474,20 +2476,6 @@ class CrackMaterialTab(QWidget):
         self._form_edit = fe
         outer.addWidget(grp_edit)
 
-        # EPPGap info label
-        self.lbl_eppgap_info = mk_lbl(
-            "EPPGap Macro — 4 parallel shear springs + 1 normal spring\n\n"
-            "Spring shares of kt:  15%,  20%,  25%,  40%\n"
-            "Gap multipliers:      0.35, 0.75, 1.25, 1.80 x gap\n"
-            "Yield multipliers:    0.20, 0.45, 0.90, 1.50\n\n"
-            "Normal spring: elastic with stiffness kn\n"
-            "This matches the crack hysteresis shape described in the paper.",
-            "sub"
-        )
-        self.lbl_eppgap_info.setWordWrap(True)
-        self.lbl_eppgap_info.setVisible(False)
-        outer.addWidget(self.lbl_eppgap_info)
-
         # Calvi2015 group (Calvi validation material)
         self.grp_spring = QGroupBox("Calvi2015 (EPP-normal / Elastic-shear)")
         self.grp_spring.setToolTip(
@@ -2663,11 +2651,14 @@ class CrackMaterialTab(QWidget):
         self.tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl.setSelectionMode(QAbstractItemView.ExtendedSelection)
         vt.addWidget(self.tbl, stretch=1)
+        self.tbl.selectionModel().currentRowChanged.connect(
+            lambda current, previous: self._on_row_selected(current.row())
+        )
         root.addWidget(grp_tbl, stretch=1)
 
         # Wire signals
         self.btn_refresh.clicked.connect(self.refresh_from_geometry)
-        self.btn_apply_sel.clicked.connect(self._apply_editor_to_selected)
+        self.btn_apply_sel.clicked.connect(self._apply_to_selected)
         self.btn_apply_all.clicked.connect(self._apply_template_to_all)
         self.btn_select_all.clicked.connect(self.tbl.selectAll)
         self.btn_reset_default.clicked.connect(self._reset_default)
@@ -2719,24 +2710,42 @@ class CrackMaterialTab(QWidget):
         return ("simplespring" in mt) or ("calvi2015" in mt)
 
     def _update_material_type_visibility(self, mat_type=None):
-        mt = mat_type if mat_type is not None else self.cmb_mat_sel.currentText()
-        self.grp_msc2d.setVisible(self._is_msc2d_type(mt))
-        self.lbl_eppgap_info.setVisible(self._is_eppgap_macro_type(mt))
-        self.grp_spring.setVisible(self._is_simple_spring_type(mt))
+        mt = (mat_type or self.cmb_mat_sel.currentText()).strip().lower()
 
-        mt_l = str(mt or "").strip().lower()
-        show_kn_kt_only = mt_l == "elastic"
-        show_elasticpp = "elasticppgap" in mt_l
-        show_epp_macro = self._is_eppgap_macro_type(mt)
+        is_elastic_only = (mt == "elastic")
+        is_eppgap = ("elasticppgap" in mt and "macro" not in mt)
+        is_calvi = ("calvi" in mt or "simplespring" in mt)
+        is_msc2d = ("multisurfcrack2d" in mt or "multi" in mt)
+        is_bilinear = ("bilinear" in mt or "custom" in mt)
 
-        self._set_form_field_visible(self.sb_width_sel, not (show_kn_kt_only or show_elasticpp or show_epp_macro))
-        self._set_form_field_visible(self.sb_ang_sel, not (show_kn_kt_only or show_elasticpp or show_epp_macro))
-        self._set_form_field_visible(self.sb_kn_sel, True)
-        self._set_form_field_visible(self.sb_kt_sel, True)
-        self._set_form_field_visible(self.sb_gap_sel, show_epp_macro or show_elasticpp)
-        self._set_form_field_visible(self.sb_eta_sel, show_epp_macro or show_elasticpp)
-        self._set_form_field_visible(self.sb_yield_sel, show_elasticpp)
-        self._set_form_field_visible(self.chk_epp_damage_sel, show_epp_macro or show_elasticpp)
+        # Show/hide entire MSC2D group
+        self.grp_msc2d.setVisible(is_msc2d)
+
+        # Show/hide Calvi2015 special spring group
+        self.grp_spring.setVisible(is_calvi)
+
+        # Width and Orientation — only relevant for Calvi, ElasticPPGap, Elastic
+        show_width_orient = is_eppgap or is_elastic_only
+        self._set_form_field_visible(self.sb_width_sel, show_width_orient)
+        self._set_form_field_visible(self.sb_ang_sel, show_width_orient)
+
+        # kn and kt — hide for Calvi (uses its own Kn/Ks) and MSC2D
+        show_kn_kt = not is_calvi and not is_msc2d
+        self._set_form_field_visible(self.sb_kn_sel, show_kn_kt)
+        self._set_form_field_visible(self.sb_kt_sel, show_kn_kt)
+
+        # gap and eta — hide for plain Elastic and MSC2D and Calvi
+        show_gap_eta = not is_elastic_only and not is_msc2d and not is_calvi
+        self._set_form_field_visible(self.sb_gap_sel, show_gap_eta)
+        self._set_form_field_visible(self.sb_eta_sel, show_gap_eta)
+
+        # Yield disp — only for ElasticPPGap
+        show_yield = is_eppgap
+        self._set_form_field_visible(self.sb_yield_sel, show_yield)
+
+        # Damage checkbox — only for ElasticPPGap
+        if hasattr(self, 'chk_epp_damage_sel'):
+            self._set_form_field_visible(self.chk_epp_damage_sel, is_eppgap)
 
     def _set_form_field_visible(self, field_widget, visible):
         lbl = self._form_edit.labelForField(field_widget) if hasattr(self, "_form_edit") else None
@@ -2996,19 +3005,29 @@ class CrackMaterialTab(QWidget):
         if self.tbl.rowCount():
             self.tbl.selectRow(0)
 
-    def _apply_editor_to_selected(self):
-        
-        rows = self._selected_rows()
-        if not rows:
-            QMessageBox.information(self, "No Selection",
-                "Select one or more crack elements first.")
+    def _apply_to_selected(self):
+        """Write editor values back into the currently selected row only."""
+        row = self.tbl.currentRow()
+        if row < 0:
             return
-        vals = self._editor_values()
-        for row in rows:
-            row_vals = self._row_values(row)
-            row_vals.update(vals)
-            self._set_row_values(row, row_vals)
-        self._sync_canvas_highlight()
+        mat = self.cmb_mat_sel.currentText()
+        kn  = self.sb_kn_sel.value()
+        kt  = self.sb_kt_sel.value()
+        gap = self.sb_gap_sel.value()
+        eta = self.sb_eta_sel.value()
+        # Write only if items exist (row may not be fully initialised yet)
+        if self.tbl.item(row, 5) is not None:
+            self.tbl.item(row, 5).setText(mat)
+            self.tbl.item(row, 6).setText(f"{kn:.3f}")
+            self.tbl.item(row, 7).setText(f"{kt:.3f}")
+            self.tbl.item(row, 8).setText(f"{gap:.4f}")
+            self.tbl.item(row, 9).setText(f"{eta:.3f}")
+        else:
+            self.tbl.setItem(row, 5, QTableWidgetItem(mat))
+            self.tbl.setItem(row, 6, QTableWidgetItem(f"{kn:.3f}"))
+            self.tbl.setItem(row, 7, QTableWidgetItem(f"{kt:.3f}"))
+            self.tbl.setItem(row, 8, QTableWidgetItem(f"{gap:.4f}"))
+            self.tbl.setItem(row, 9, QTableWidgetItem(f"{eta:.3f}"))
 
     def _reset_default(self):
         rows = self._selected_rows() or list(range(self.tbl.rowCount()))
@@ -3046,6 +3065,34 @@ class CrackMaterialTab(QWidget):
             f"Elem {first['element_index']} at x={first['x']:.3f}, y={first['y']:.3f}")
         self._set_editor_values(first)
         self._sync_canvas_highlight()
+
+    def _on_row_selected(self, row):
+        """Load the selected row's parameters into the Selected Element Editor."""
+        if row < 0 or row >= self.tbl.rowCount():
+            return
+        try:
+            mat = self.tbl.item(row, 5).text() if self.tbl.item(row, 5) else ""
+            kn = float(self.tbl.item(row, 6).text()) if self.tbl.item(row, 6) else 0.0
+            kt = float(self.tbl.item(row, 7).text()) if self.tbl.item(row, 7) else 0.0
+            gap = float(self.tbl.item(row, 8).text()) if self.tbl.item(row, 8) else 0.0
+            eta = float(self.tbl.item(row, 9).text()) if self.tbl.item(row, 9) else 0.0
+        except (ValueError, AttributeError):
+            return
+        # Block signals so setting values does not trigger further callbacks
+        self.cmb_mat_sel.blockSignals(True)
+        idx = self.cmb_mat_sel.findText(mat)
+        if idx >= 0:
+            self.cmb_mat_sel.setCurrentIndex(idx)
+        self.cmb_mat_sel.blockSignals(False)
+        self.sb_kn_sel.setValue(kn)
+        self.sb_kt_sel.setValue(kt)
+        self.sb_gap_sel.setValue(gap)
+        self.sb_eta_sel.setValue(eta)
+        self._update_material_type_visibility()
+        # Highlight the selected row on the canvas
+        self._sync_canvas_highlight()
+        if self._geo_ref and hasattr(self._geo_ref, 'canvas'):
+            self._geo_ref.canvas.update()
 
     def refresh_from_geometry(self, geo_tab=None):
        
@@ -5450,12 +5497,15 @@ class MainWindow(QMainWindow):
 
         for parent in [self.geo, self.crk, self.anl, self.run]:
             _connect_spinboxes(parent)
+            for widget in parent.findChildren(QComboBox):
+                widget.installEventFilter(self._wheel_filter)
         self.crk.tbl.itemChanged.connect(lambda *_: self._set_dirty(True))
 
     def _install_spinbox_wheel_guard(self):
-        self._spinbox_wheel_guard = SpinboxWheelEventFilter(self)
+        self._wheel_filter = SpinboxWheelEventFilter(self)
+        self._spinbox_wheel_guard = self._wheel_filter
         for sb in self.findChildren(QAbstractSpinBox):
-            sb.installEventFilter(self._spinbox_wheel_guard)
+            sb.installEventFilter(self._wheel_filter)
             sb.setFocusPolicy(Qt.StrongFocus)
 
     def _update_window_title(self):
