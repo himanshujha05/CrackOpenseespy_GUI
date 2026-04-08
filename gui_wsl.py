@@ -2636,10 +2636,26 @@ class CrackMaterialTab(QWidget):
         scroll.setWidget(content)
         root.addWidget(scroll, stretch=1)
 
-        # Crack Element Table pinned at bottom
-        grp_tbl = QGroupBox("Crack Element Table")
-        vt = QVBoxLayout(grp_tbl); vt.setSpacing(6)
-        vt.addWidget(mk_lbl(
+        # ── Collapsible Crack Element Table ──────────────────────────────────────
+        self._tbl_collapsed = False
+
+        tbl_header_row = QHBoxLayout()
+        self.btn_tbl_toggle = QPushButton("▼  Crack Element Table")
+        self.btn_tbl_toggle.setObjectName("flat")
+        self.btn_tbl_toggle.setStyleSheet(
+            f"QPushButton{{background:{BG_CARD};color:{C1};border:1px solid {BORDER};"
+            f"border-radius:4px;padding:7px 14px;font-weight:bold;font-size:12px;"
+            f"text-align:left;}} QPushButton:hover{{background:{BG_PANEL};}}")
+        self.btn_tbl_toggle.setCheckable(True)
+        self.btn_tbl_toggle.setChecked(False)
+        tbl_header_row.addWidget(self.btn_tbl_toggle, stretch=1)
+        root.addLayout(tbl_header_row)
+
+        self.tbl_container = QWidget()
+        tc_layout = QVBoxLayout(self.tbl_container)
+        tc_layout.setContentsMargins(0, 4, 0, 0)
+        tc_layout.setSpacing(4)
+        tc_layout.addWidget(mk_lbl(
             "Each row is one interface element between two duplicated crack nodes.\n"
             "Selecting rows highlights those elements on the Geometry canvas in yellow.", "sub"))
         self.tbl = QTableWidget(0, 11)
@@ -2650,11 +2666,14 @@ class CrackMaterialTab(QWidget):
         self.tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        vt.addWidget(self.tbl, stretch=1)
+        self.tbl.setMinimumHeight(180)
+        tc_layout.addWidget(self.tbl, stretch=1)
+        root.addWidget(self.tbl_container, stretch=1)
+
         self.tbl.selectionModel().currentRowChanged.connect(
             lambda current, previous: self._on_row_selected(current.row())
         )
-        root.addWidget(grp_tbl, stretch=1)
+        self.btn_tbl_toggle.toggled.connect(self._toggle_crack_table)
 
         # Wire signals
         self.btn_refresh.clicked.connect(self.refresh_from_geometry)
@@ -2754,25 +2773,53 @@ class CrackMaterialTab(QWidget):
         field_widget.setVisible(visible)
 
     def _on_tmpl_mat_changed(self, mat_type=None):
-        mt = mat_type if mat_type is not None else self.cmb_mat_tmpl.currentText()
-        is_msc2d = self._is_msc2d_type(mt)
-        show_basic = not is_msc2d
-        mt_l = str(mt or "").strip().lower()
-        show_yield = ("elasticppgap" in mt_l) or self._is_simple_spring_type(mt)
+        mt = (mat_type or self.cmb_mat_tmpl.currentText()).strip().lower()
 
-        for widget in [self.sb_kn_tmpl, self.sb_kt_tmpl, self.sb_gap_tmpl, self.sb_eta_tmpl]:
-            lbl = self._form_tmpl.labelForField(widget) if hasattr(self, "_form_tmpl") else None
-            if lbl is not None:
-                lbl.setVisible(show_basic)
-            widget.setVisible(show_basic)
+        is_msc2d = ("multisurfcrack2d" in mt or ("multi" in mt and "surf" in mt))
+        is_calvi = ("calvi" in mt or "simplespring" in mt)
+        is_elastic = (mt == "elastic")
+        is_eppgap = ("elasticppgap" in mt and "macro" not in mt)
+        is_macro = ("macro" in mt)
+        is_bilinear = ("bilinear" in mt or "custom" in mt)
 
-        lbl_y = self._form_tmpl.labelForField(self.sb_yield_tmpl) if hasattr(self, "_form_tmpl") else None
-        if lbl_y is not None:
-            lbl_y.setVisible(show_yield)
-        self.sb_yield_tmpl.setVisible(show_yield)
+        # Width and Orientation — only for ElasticPPGap
+        show_width_orient = is_eppgap
+        for w in [self.sb_width_tmpl, self.sb_ang_tmpl]:
+            lbl = self._form_tmpl.labelForField(w)
+            if lbl: lbl.setVisible(show_width_orient)
+            w.setVisible(show_width_orient)
 
-        if hasattr(self, "_tmpl_auto_wrap"):
-            self._tmpl_auto_wrap.setVisible(show_basic)
+        # kn, kt — hide for Calvi and MSC2D
+        show_kn_kt = not is_calvi and not is_msc2d
+        for w in [self.sb_kn_tmpl, self.sb_kt_tmpl]:
+            lbl = self._form_tmpl.labelForField(w)
+            if lbl: lbl.setVisible(show_kn_kt)
+            w.setVisible(show_kn_kt)
+
+        # gap and eta — only for ElasticPPGap, EPPGap Macro, CustomBilinear
+        show_gap_eta = is_eppgap or is_macro or is_bilinear
+        for w in [self.sb_gap_tmpl, self.sb_eta_tmpl]:
+            lbl = self._form_tmpl.labelForField(w)
+            if lbl: lbl.setVisible(show_gap_eta)
+            w.setVisible(show_gap_eta)
+
+        # Yield disp — only for ElasticPPGap
+        if hasattr(self, 'sb_yield_tmpl'):
+            lbl = self._form_tmpl.labelForField(self.sb_yield_tmpl)
+            if lbl: lbl.setVisible(is_eppgap)
+            self.sb_yield_tmpl.setVisible(is_eppgap)
+
+        # Auto kn/kt row — hide for Calvi and MSC2D
+        if hasattr(self, '_tmpl_auto_wrap'):
+            self._tmpl_auto_wrap.setVisible(not is_calvi and not is_msc2d)
+
+        # MSC2D group visible only for MultiSurfCrack2D
+        if hasattr(self, 'grp_msc2d'):
+            self.grp_msc2d.setVisible(is_msc2d)
+
+        # Calvi spring group visible only for Calvi2015
+        if hasattr(self, 'grp_spring'):
+            self.grp_spring.setVisible(is_calvi)
 
     def _run_preview(self):
         vals = self._editor_values()
@@ -3094,6 +3141,14 @@ class CrackMaterialTab(QWidget):
         if self._geo_ref and hasattr(self._geo_ref, 'canvas'):
             self._geo_ref.canvas.update()
 
+    def _toggle_crack_table(self, collapsed):
+        self._tbl_collapsed = collapsed
+        self.tbl_container.setVisible(not collapsed)
+        arrow = "▶" if collapsed else "▼"
+        n = self.tbl.rowCount()
+        count_txt = f"  ({n} elements)" if n > 0 else ""
+        self.btn_tbl_toggle.setText(f"{arrow}  Crack Element Table{count_txt}")
+
     def refresh_from_geometry(self, geo_tab=None):
        
         geo = geo_tab or self._geo_ref
@@ -3130,6 +3185,7 @@ class CrackMaterialTab(QWidget):
             self.tbl.selectRow(0)
         else:
             self._on_selection_changed()
+        self._toggle_crack_table(self._tbl_collapsed)
 
     def get_params(self):
         
@@ -3160,10 +3216,12 @@ class CrackMaterialTab(QWidget):
         if self.tbl.rowCount():
             self.tbl.selectRow(0)
             self._on_selection_changed()
+        self._toggle_crack_table(self._tbl_collapsed)
 
     def reset_project_state(self):
         self.tbl.setRowCount(0)
         self.lbl_selected.setText("No crack element selected.")
+        self._toggle_crack_table(self._tbl_collapsed)
 
 
 
