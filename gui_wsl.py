@@ -400,11 +400,14 @@ class PanelMeshCanvas(QWidget):
     MODE_CRACK  : click at any Y to add / remove a pending crack line
     """
     node_clicked         = pyqtSignal(int)
+    node_double_clicked  = pyqtSignal(int)
     box_selection_changed = pyqtSignal(list)
+    node_moved           = pyqtSignal(int, float, float)   # nid, new_x, new_y
     crack_y_added        = pyqtSignal(float)
     crack_y_removed      = pyqtSignal(float)
     hand_strokes_changed = pyqtSignal()
     hand_stroke_erased   = pyqtSignal(int)
+    mode_exited_draw     = pyqtSignal()
 
     MODE_SELECT = "select"
     MODE_CRACK  = "crack"
@@ -426,6 +429,7 @@ class PanelMeshCanvas(QWidget):
         self.bc_nodes     = {}       # {nid: (fix_x, fix_y)}
         self.load_nodes   = {}       # {nid: (Fx, Fy)}
         self.selected_node = None
+        self._multi_selected = set()
         self.show_ids     = True
         self.show_elem_ids = False
         self.mode         = self.MODE_SELECT
@@ -445,6 +449,12 @@ class PanelMeshCanvas(QWidget):
         self._bg_image    = QImage()
         self._bg_path     = ""
         self._highlighted_pairs = set()
+        # node-drag state (MODE_SELECT)
+        self._drag_nid      = None   # nid being dragged, or None
+        self._dragging      = False  # True once mouse has moved past threshold
+        self._drag_px_start = None   # (px, py) at press, for threshold check
+        self._grid_nx       = 0      # mesh grid divisions (for snap)
+        self._grid_ny       = 0
         self.setMouseTracking(True)
 
     # coordinate transforms between model space and canvas pixels
@@ -484,6 +494,7 @@ class PanelMeshCanvas(QWidget):
         self.crack_pairs = crack_pairs; self.crack_rows = crack_rows
         self.panel_W = W; self.panel_H = H
         self.selected_node = None
+        self._multi_selected = set()
         # Build below/above sets for color-coded crack node display
         self._below_nodes = {cp[0] for cp in crack_pairs}
         self._above_nodes = {cp[1] for cp in crack_pairs}
@@ -492,6 +503,7 @@ class PanelMeshCanvas(QWidget):
     def clear_mesh(self):
         self.nodes = {}; self.tris = []; self.crack_pairs = []
         self.crack_rows = set(); self.selected_node = None
+        self._multi_selected = set()
         self._below_nodes = set(); self._above_nodes = set()
         self.update()
 
@@ -502,6 +514,8 @@ class PanelMeshCanvas(QWidget):
 
     def set_bc_nodes(self, d):   self.bc_nodes = dict(d); self.update()
     def set_load_nodes(self, d): self.load_nodes = dict(d); self.update()
+    def set_box_selected(self, nids): self._box_selected = set(nids); self.update()
+    def set_grid(self, nx, ny):  self._grid_nx = int(nx); self._grid_ny = int(ny)
 
     def set_mode(self, mode):
         self.mode = mode
@@ -590,7 +604,23 @@ class PanelMeshCanvas(QWidget):
         if self.mode == self.MODE_SELECT:
             nid = self._node_near(px, py)
             if nid is not None:
-                self.selected_node = nid; self.node_clicked.emit(nid); self.update()
+                # Always add to multi-selection (no Ctrl required)
+                if not hasattr(self, '_multi_selected'):
+                    self._multi_selected = set()
+                # If Shift is held, remove from selection instead
+                if event.modifiers() & Qt.ShiftModifier:
+                    self._multi_selected.discard(nid)
+                else:
+                    self._multi_selected.add(nid)
+                self.selected_node = nid
+                self.node_clicked.emit(nid)
+                self.update()
+            else:
+                # Click empty space clears the multi-selection
+                if hasattr(self, '_multi_selected'):
+                    self._multi_selected = set()
+                self.selected_node = None
+                self.update()
         elif self.mode == self.MODE_CRACK:
             _, my = self._to_model(px, py)
             my = max(0.005 * self.panel_H, min(0.995 * self.panel_H, my))
@@ -606,8 +636,37 @@ class PanelMeshCanvas(QWidget):
         elif self.mode == self.MODE_BOX:
             self._box_start = (px, py); self._box_end = (px, py); self.update()
 
+    def mouseDoubleClickEvent(self, event):
+        if event.button() != Qt.LeftButton:
+            return
+        if self.mode != self.MODE_SELECT:
+            return
+        nid = self._node_near(event.x(), event.y())
+        if nid is not None:
+            self.node_double_clicked.emit(nid)
+
     def mouseMoveEvent(self, event):
         self._hover_model = self._to_model(event.x(), event.y())
+        if self.mode == self.MODE_SELECT and self._drag_nid is not None:
+            if not self._dragging:
+                ddx = event.x() - self._drag_px_start[0]
+                ddy = event.y() - self._drag_px_start[1]
+                if math.hypot(ddx, ddy) > 4:
+                    self._dragging = True
+                    self.setCursor(Qt.SizeAllCursor)
+            if self._dragging:
+                mx, my = self._to_model(event.x(), event.y())
+                mx = max(0.0, min(float(self.panel_W), mx))
+                my = max(0.0, min(float(self.panel_H), my))
+                shift = bool(event.modifiers() & Qt.ShiftModifier)
+                if not shift and self._grid_nx > 0 and self._grid_ny > 0:
+                    dx_g = self.panel_W / self._grid_nx
+                    dy_g = self.panel_H / self._grid_ny
+                    mx = max(0.0, min(self.panel_W, round(mx / dx_g) * dx_g))
+                    my = max(0.0, min(self.panel_H, round(my / dy_g) * dy_g))
+                self.nodes[self._drag_nid] = (mx, my)
+                self.update()
+                return
         if self.mode == self.MODE_BOX and self._box_start:
             self._box_end = (event.x(), event.y()); self.update()
         if self.mode == self.MODE_DRAW and self._drawing:
@@ -619,6 +678,15 @@ class PanelMeshCanvas(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, event):
+        if (self.mode == self.MODE_SELECT and self._drag_nid is not None
+                and event.button() == Qt.LeftButton):
+            if self._dragging:
+                mx, my = self.nodes[self._drag_nid]
+                self.node_moved.emit(self._drag_nid, mx, my)
+                self.setCursor(Qt.ArrowCursor)
+            self._drag_nid = None
+            self._dragging = False
+            self._drag_px_start = None
         if self.mode == self.MODE_BOX and self._box_start and event.button() == Qt.LeftButton:
             x0 = min(self._box_start[0], self._box_end[0])
             x1 = max(self._box_start[0], self._box_end[0])
@@ -637,7 +705,12 @@ class PanelMeshCanvas(QWidget):
                 self.hand_strokes.append(list(self._cur_stroke))
                 self.hand_strokes_changed.emit()
             self._cur_stroke = []
+            # Automatically switch back to Select mode so user can click nodes
+            self.mode = self.MODE_SELECT
+            self.setCursor(Qt.ArrowCursor)
+            self.mode_exited_draw.emit()   # new signal, see below
             self.update()
+            return
 
     def leaveEvent(self, event):
         self._hover_model = None; self.update()
@@ -729,7 +802,16 @@ class PanelMeshCanvas(QWidget):
         show_label = self.show_ids and len(self.nodes) <= 300
         for nid, (nx_, ny_) in self.nodes.items():
             ppx, ppy = self._to_px(nx_, ny_)
-            if nid == self.selected_node:
+            if nid in self._multi_selected:
+                p.setBrush(QBrush(QColor(C2)))
+                p.setPen(QPen(QColor("#ffffff"), 1.5))
+                p.drawEllipse(ppx - 6, ppy - 6, 12, 12)
+                if nid == self.selected_node and len(self._multi_selected) > 1:
+                    p.setBrush(Qt.NoBrush)
+                    p.setPen(QPen(QColor(C1), 2))
+                    p.drawEllipse(ppx - 10, ppy - 10, 20, 20)
+                continue   # skip the other branches for this node
+            elif nid == self.selected_node:
                 p.setBrush(QBrush(QColor(C2))); p.setPen(QPen(QColor("#ffffff"), 1.5))
                 p.drawEllipse(ppx - 6, ppy - 6, 12, 12)
             elif nid in self.bc_nodes:
@@ -752,6 +834,15 @@ class PanelMeshCanvas(QWidget):
             if show_label:
                 p.setPen(QPen(QColor(TXTS), 1))
                 p.drawText(ppx + 5, ppy - 2, str(nid))
+
+        # Box-selected node highlight (cyan ring drawn on top of nodes)
+        if self._box_selected:
+            p.setPen(QPen(QColor("#00ffff"), 2))
+            p.setBrush(Qt.NoBrush)
+            for nid in self._box_selected:
+                if nid in self.nodes:
+                    ppx, ppy = self._to_px(*self.nodes[nid])
+                    p.drawEllipse(ppx - 8, ppy - 8, 16, 16)
 
         # Load arrows
         if self.show_loads:
@@ -836,6 +927,7 @@ class PanelMeshCanvas(QWidget):
             ("●", C4, "Fixed BC"), ("●", C3, "Loaded"),
             ("●", CRACK_BELOW, "Crack ↓"), ("●", CRACK_ABOVE, "Crack ↑"),
             ("╋", "#ff6b35", "Interface Elem"),
+            ("○", "#00ffff", "Box Sel"),
         ]
         lx_ = W - 120
         for i, (sym, col, txt) in enumerate(legend):
@@ -972,37 +1064,70 @@ class GeometryTab(QWidget):
         fm.addRow("Preview:", self.lbl_mesh_preview)
         lv.addWidget(grp_mesh)
 
-        # Generate Mesh + Validate buttons
-        btn_row = QHBoxLayout()
-        self.btn_gen = QPushButton("Generate Mesh")
-        self.btn_gen.setObjectName("amber")
-        self.btn_gen.setMinimumHeight(36)
-        self.btn_gen.setStyleSheet(
+        # Three mesh action buttons — same size, same amber color
+        btn_style = (
             f"background:{C4};color:{BG_DEEP};font-weight:bold;font-size:13px;"
-            f"padding:8px 16px;border-radius:5px;border:none;")
+            f"padding:8px 16px;border-radius:5px;border:none;min-height:36px;"
+        )
+        btn_style_hover = (
+            f"QPushButton:hover{{background:#e5c07b;}}"
+            f"QPushButton:disabled{{background:{BORDER};color:{TXTS};}}"
+        )
+
+        self.btn_gen = QPushButton("Generate Mesh")
+        self.btn_gen.setStyleSheet(f"QPushButton{{{btn_style}}} {btn_style_hover}")
         self.btn_gen.setToolTip("Generate triangular mesh with crack interfaces")
 
+        self.btn_update_mesh = QPushButton("Update Mesh")
+        self.btn_update_mesh.setStyleSheet(f"QPushButton{{{btn_style}}} {btn_style_hover}")
+        self.btn_update_mesh.setToolTip(
+            "Re-generate mesh while preserving existing BCs, loads, and crack positions")
+        self.btn_update_mesh.setEnabled(False)
+
         self.btn_validate = QPushButton("Validate Mesh")
-        self.btn_validate.setObjectName("flat")
-        self.btn_validate.setMinimumHeight(36)
-        self.btn_validate.setToolTip(
-            "Check mesh integrity: degenerate triangles, crack pair validity,\n"
-            "connectivity on both sides of each crack")
+        self.btn_validate.setStyleSheet(f"QPushButton{{{btn_style}}} {btn_style_hover}")
+        self.btn_validate.setToolTip("Check mesh integrity and report issues")
 
         self.btn_clear_mesh = QPushButton("Clear Mesh")
         self.btn_clear_mesh.setObjectName("danger")
         self.btn_clear_mesh.setMinimumHeight(36)
-        self.btn_clear_mesh.setToolTip("Clear the current mesh, BCs, and loads from the canvas")
+        self.btn_clear_mesh.setToolTip("Clear mesh, BCs, and loads from canvas")
 
-        btn_row.addWidget(self.btn_gen, stretch=2)
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(6)
+        btn_row.addWidget(self.btn_gen, stretch=1)
+        btn_row.addWidget(self.btn_update_mesh, stretch=1)
         btn_row.addWidget(self.btn_validate, stretch=1)
-        btn_row.addWidget(self.btn_clear_mesh, stretch=1)
         lv.addLayout(btn_row)
+
+        # Clear Mesh on its own row below
+        clear_row = QHBoxLayout()
+        clear_row.addWidget(self.btn_clear_mesh)
+        clear_row.addStretch()
+        lv.addLayout(clear_row)
 
         # Mesh info label
         self.lbl_mesh_info = mk_lbl("Mesh not generated.", "sub")
         self.lbl_mesh_info.setWordWrap(True)
         lv.addWidget(self.lbl_mesh_info)
+
+        # External mesh import
+        grp_import = QGroupBox("Import External Mesh")
+        vim = QVBoxLayout(grp_import); vim.setSpacing(6)
+        vim.addWidget(mk_lbl(
+            "Load a pre-generated mesh from a JSON or NPZ file.\n"
+            "Required keys: nodes, elements, crack_pairs.", "sub"))
+        self.btn_import_mesh = QPushButton("Import Mesh File (JSON / NPZ)")
+        self.btn_import_mesh.setObjectName("flat")
+        self.btn_import_mesh.setToolTip(
+            "Import a pre-generated mesh from an external source.\n"
+            "JSON: {nodes, elements, crack_pairs[, W, H]}\n"
+            "NPZ:  nodes(N×2), elements(T×3or4), crack_pairs(C×4+)[, node_ids, W, H]")
+        vim.addWidget(self.btn_import_mesh)
+        self.lbl_import_status = mk_lbl("", "sub")
+        self.lbl_import_status.setWordWrap(True)
+        vim.addWidget(self.lbl_import_status)
+        lv.addWidget(grp_import)
 
         # Concrete elastic properties
         grp_conc = QGroupBox("Concrete (Plane Stress)")
@@ -1035,8 +1160,14 @@ class GeometryTab(QWidget):
         row_inp1.addWidget(self.btn_box_select)
         vc.addLayout(row_inp1)
         row_inp2 = QHBoxLayout()
-        row_inp2.addWidget(mk_lbl("θ (deg):"))
-        self.sb_crack_angle = dsb(0.0, -180., 180., 1, 1.0, w=80, tip="Default crack orientation angle from horizontal (deg)")
+        row_inp2.addWidget(mk_lbl("Crack angle (° from horizontal):"))
+        self.sb_crack_angle = dsb(0.0, -180., 180., 1, 1.0, w=80,
+            tip=("Orientation of the crack line relative to horizontal.\n"
+                 "0° = horizontal crack (runs left-to-right)\n"
+                 "90° = vertical crack (runs bottom-to-top)\n"
+                 "45° = diagonal crack\n\n"
+                 "This sets the tangent and normal directions used by the\n"
+                 "zeroLength interface element in OpenSeesPy."))
         row_inp2.addWidget(self.sb_crack_angle)
         row_inp2.addStretch()
         vc.addLayout(row_inp2)
@@ -1132,17 +1263,78 @@ class GeometryTab(QWidget):
         vbc.addWidget(self.tbl_bc)
         lv.addWidget(grp_bc)
 
-        # Applied loads
-        grp_load = QGroupBox("Applied Loads")
+        # Load Cases manager
+        grp_load = QGroupBox("Load Cases")
         vld = QVBoxLayout(grp_load); vld.setSpacing(6)
         vld.addWidget(mk_lbl(
-            "Select a node, enter Fx/Fy (kN), then Apply Load.\n"
-            "Quick-assign applies uniform load to the full top edge.", "sub"))
+            "Define named load cases with independent nodal loads and time series.\n"
+            "Assign nodal loads to the active case shown in the selector.", "sub"))
 
+        # Case selector row
+        lc_sel_row = QHBoxLayout()
+        self.cmb_load_case = QComboBox()
+        self.cmb_load_case.setToolTip("Active load case — all load assignments target this case")
+        self.btn_add_case = QPushButton("+ Add Case")
+        self.btn_add_case.setObjectName("flat")
+        self.btn_add_case.setMinimumWidth(100)
+        self.btn_add_case.setMinimumHeight(32)
+        self.btn_add_case.setToolTip("Add a new load case with its own time series and nodal loads")
+
+        self.btn_remove_case = QPushButton("− Remove Case")
+        self.btn_remove_case.setObjectName("flat")
+        self.btn_remove_case.setMinimumWidth(130)
+        self.btn_remove_case.setMinimumHeight(32)
+        self.btn_remove_case.setToolTip("Remove the currently selected load case and all its nodal loads")
+        lc_sel_row.addWidget(mk_lbl("Case:"))
+        lc_sel_row.addWidget(self.cmb_load_case, stretch=1)
+        lc_sel_row.addWidget(self.btn_add_case)
+        lc_sel_row.addWidget(self.btn_remove_case)
+        vld.addLayout(lc_sel_row)
+
+        # Case detail sub-form
+        self._grp_lc_detail = QGroupBox("Case Settings")
+        self._grp_lc_detail.setFlat(True)
+        fdet = QFormLayout(self._grp_lc_detail)
+        fdet.setSpacing(4); fdet.setContentsMargins(4, 4, 4, 4)
+        self.txt_lc_name = QLineEdit("Default")
+        self.txt_lc_name.setToolTip("Rename this load case")
+        self.cmb_lc_ts_type = QComboBox()
+        self.cmb_lc_ts_type.addItems(["Constant", "Linear", "Path"])
+        self.cmb_lc_ts_type.setToolTip(
+            "Constant: load held steady throughout\n"
+            "Linear: load scales linearly with pseudo-time\n"
+            "Path: user-defined time\u2013factor curve")
+        self.txt_lc_desc = QLineEdit()
+        self.txt_lc_desc.setPlaceholderText("e.g. Constant compression held across crack")
+        self.txt_lc_expected = QLineEdit()
+        self.txt_lc_expected.setPlaceholderText("e.g. Applied at t=0, held constant throughout")
+        fdet.addRow("Name:", self.txt_lc_name)
+        fdet.addRow("Time series:", self.cmb_lc_ts_type)
+        fdet.addRow("Description:", self.txt_lc_desc)
+        fdet.addRow("Application:", self.txt_lc_expected)
+
+        # Path table (shown only when ts_type == "Path")
+        self._grp_lc_path = QGroupBox("Path Definition")
+        self._grp_lc_path.setFlat(True)
+        vpath = QVBoxLayout(self._grp_lc_path); vpath.setSpacing(4)
+        self.tbl_lc_path = QTableWidget(0, 2)
+        self.tbl_lc_path.setHorizontalHeaderLabels(["Time", "Load Factor"])
+        self.tbl_lc_path.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tbl_lc_path.setMaximumHeight(90)
+        self.btn_add_path_row = QPushButton("+ Row")
+        self.btn_add_path_row.setObjectName("flat")
+        self.btn_add_path_row.setMaximumWidth(60)
+        vpath.addWidget(self.tbl_lc_path)
+        vpath.addWidget(self.btn_add_path_row)
+        fdet.addRow("Path:", self._grp_lc_path)
+        self._grp_lc_path.setVisible(False)
+        vld.addWidget(self._grp_lc_detail)
+
+        # Quick-assign
         row_load_btns = QHBoxLayout()
         self.btn_top_disp = QPushButton("Uniform Top Load")
         self.btn_top_disp.setObjectName("flat")
-        self.btn_clr_loads = QPushButton("Clear All Loads")
+        self.btn_clr_loads = QPushButton("Clear Case Loads")
         self.btn_clr_loads.setObjectName("danger")
         row_load_btns.addWidget(self.btn_top_disp)
         row_load_btns.addWidget(self.btn_clr_loads)
@@ -1169,7 +1361,8 @@ class GeometryTab(QWidget):
         self.btn_apply_load = QPushButton("Apply Load")
         self.btn_apply_load.setEnabled(False)
         self.btn_clear_node_load = QPushButton("Clear")
-        self.btn_clear_node_load.setObjectName("flat"); self.btn_clear_node_load.setEnabled(False)
+        self.btn_clear_node_load.setObjectName("flat")
+        self.btn_clear_node_load.setEnabled(False)
         load_row_buttons.addWidget(self.btn_apply_load)
         load_row_buttons.addWidget(self.btn_clear_node_load)
         load_row_buttons.addStretch()
@@ -1263,6 +1456,7 @@ class GeometryTab(QWidget):
         self.chk_show_bcs.setChecked(True)
         self.chk_show_loads = QCheckBox("Loads")
         self.chk_show_loads.setChecked(True)
+        mode_row.setSpacing(14)
         mode_row.addWidget(self.lbl_canvas_hint, stretch=1)
         mode_row.addWidget(self.lbl_canvas_mode)
         mode_row.addWidget(self.chk_show_ids)
@@ -1278,7 +1472,20 @@ class GeometryTab(QWidget):
         # internal state
         self._mesh_data = None   # {nodes, tris, crack_pairs, crack_rows, W, H, nx, ny, crack_ys}
         self._bc_nodes  = {}     # {nid: (fix_x, fix_y)}
-        self._load_nodes = {}    # {nid: (Fx, Fy)}
+        self._load_nodes = {}    # {nid: (Fx, Fy)} — always == _load_cases[_current_load_case]["nodes"]
+        self._load_cases = {     # keyed by case name
+            "Default": {
+                "ts_type": "Constant",
+                "description": "",
+                "expected_application": "Applied at t=0, held constant throughout",
+                "nodes": self._load_nodes,   # share reference
+                "path_time": [],
+                "path_factors": [],
+                "active": True,
+                "scale": 1.0,
+            }
+        }
+        self._current_load_case = "Default"
         self._selected_node = None
         self._crack_ys      = []
         self._hand_strokes  = []   # mirror of canvas.hand_strokes
@@ -1291,18 +1498,23 @@ class GeometryTab(QWidget):
 
         # wire
         self.btn_gen.clicked.connect(self._generate)
+        self.btn_update_mesh.clicked.connect(self._update_mesh)
         self.btn_validate.clicked.connect(self._validate_mesh)
         self.btn_clear_mesh.clicked.connect(self._clear_mesh)
+        self.btn_import_mesh.clicked.connect(self._import_external_mesh)
         self.btn_upload_img.clicked.connect(self._upload_background_image)
         self.btn_clear_img.clicked.connect(self._clear_background_image)
         self.btn_crack_mode.toggled.connect(self._toggle_crack_mode)
         self.btn_box_select.toggled.connect(self._toggle_box_mode)
         self.txt_crack_y.editingFinished.connect(self._sync_crack_ys_from_text)
         self.canvas.node_clicked.connect(self._on_node_clicked)
+        self.canvas.node_double_clicked.connect(self._on_node_double_clicked)
         self.canvas.box_selection_changed.connect(self._on_box_selection_changed)
+        self.canvas.node_moved.connect(self._on_node_moved)
         self.canvas.crack_y_added.connect(self._add_crack_y)
         self.canvas.crack_y_removed.connect(self._remove_crack_y)
         self.canvas.hand_strokes_changed.connect(self._on_hand_strokes_changed)
+        self.canvas.mode_exited_draw.connect(self._on_canvas_auto_select_mode)
         self.btn_hand_draw.toggled.connect(self._toggle_hand_draw)
         self.btn_undo_stroke.clicked.connect(self.canvas.undo_hand_stroke)
         self.btn_clr_strokes.clicked.connect(self.canvas.clear_hand_strokes)
@@ -1315,6 +1527,15 @@ class GeometryTab(QWidget):
         self.btn_clr_loads.clicked.connect(self._clear_all_loads)
         self.btn_apply_load.clicked.connect(self._apply_load_to_node)
         self.btn_clear_node_load.clicked.connect(self._clear_node_load)
+        self.cmb_load_case.currentTextChanged.connect(self._on_load_case_changed)
+        self.btn_add_case.clicked.connect(self._add_load_case)
+        self.btn_remove_case.clicked.connect(self._remove_load_case)
+        self.cmb_lc_ts_type.currentTextChanged.connect(self._on_lc_ts_changed)
+        self.txt_lc_name.editingFinished.connect(self._rename_load_case)
+        self.txt_lc_desc.editingFinished.connect(self._save_lc_meta)
+        self.txt_lc_expected.editingFinished.connect(self._save_lc_meta)
+        self.btn_add_path_row.clicked.connect(self._add_path_row)
+        self._rebuild_load_case_combo()
         self.chk_show_ids.toggled.connect(self._toggle_ids)
         self.chk_show_elem_ids.toggled.connect(self._toggle_elem_ids)
         self.chk_show_crack_links.toggled.connect(self._toggle_crack_links)
@@ -1482,6 +1703,20 @@ class GeometryTab(QWidget):
         elif not self.btn_hand_draw.isChecked() and not self.btn_crack_mode.isChecked():
             self._set_canvas_mode(PanelMeshCanvas.MODE_SELECT)
 
+    def _on_canvas_auto_select_mode(self):
+        """Called when canvas auto-exits draw mode after a stroke."""
+        self.btn_hand_draw.blockSignals(True)
+        self.btn_crack_mode.blockSignals(True)
+        self.btn_box_select.blockSignals(True)
+        self.btn_hand_draw.setChecked(False)
+        self.btn_crack_mode.setChecked(False)
+        self.btn_box_select.setChecked(False)
+        self.btn_hand_draw.blockSignals(False)
+        self.btn_crack_mode.blockSignals(False)
+        self.btn_box_select.blockSignals(False)
+        self.lbl_canvas_mode.setText("Mode: ↖ Select (click a node)")
+        self.lbl_canvas_hint.setText("Select mode: click nodes to add to selection. Shift+click to remove.")
+
     def _add_crack_y(self, y):
         if not any(abs(y - yc) < 0.01 * self.sb_H.value() for yc in self._crack_ys):
             self._crack_ys.append(y); self._crack_ys.sort()
@@ -1532,7 +1767,7 @@ class GeometryTab(QWidget):
             self.lbl_crack_ys.setText(
                 f"{len(self._crack_ys)} crack line(s) at Y = " +
                 ", ".join(f"{y:.3f}" for y in self._crack_ys) +
-                f"   |   default θ = {self.sb_crack_angle.value():.1f}°")
+                f"   |   default angle = {self.sb_crack_angle.value():.1f}° from horizontal")
         else:
             self.lbl_crack_ys.setText("No crack lines defined.")
         self._refresh_rebar_crack_y_options()
@@ -1626,12 +1861,41 @@ class GeometryTab(QWidget):
 
     def _on_box_selection_changed(self, nids):
         self._box_selected_nodes = [int(nid) for nid in nids]
+        self.canvas.set_box_selected(self._box_selected_nodes)
         if self._box_selected_nodes:
-            self.lbl_sel_node.setText(f"{len(self._box_selected_nodes)} nodes selected by box.")
+            n = len(self._box_selected_nodes)
+            self.lbl_sel_node.setText(f"{n} node{'s' if n != 1 else ''} selected")
             self.btn_apply_bc.setEnabled(True)
             self.btn_apply_load.setEnabled(True)
         else:
-            self.lbl_sel_node.setText("No node selected.")
+            if self._selected_node is None:
+                self.lbl_sel_node.setText("No node selected.")
+                self.btn_apply_bc.setEnabled(False)
+                self.btn_apply_load.setEnabled(False)
+            else:
+                md = self._mesh_data
+                if md is not None:
+                    x, y = md["nodes"][self._selected_node]
+                    self.lbl_sel_node.setText(
+                        f"Node #{self._selected_node}  (x={x:.4f}, y={y:.4f})")
+
+    def _on_node_moved(self, nid, x, y):
+        if self._mesh_data is None: return
+        self._mesh_data["nodes"][nid] = (x, y)
+        md = self._mesh_data
+        self.canvas.set_mesh(
+            md["nodes"], md["tris"], md["crack_pairs"],
+            md["crack_rows"], md["W"], md["H"]
+        )
+        self.canvas.set_bc_nodes(self._bc_nodes)
+        self.canvas.set_load_nodes(self._load_nodes)
+        self.canvas.set_grid(md["nx"], md["ny"])
+        self.canvas.set_box_selected(self._box_selected_nodes)
+        # Restore selection so the moved node stays highlighted
+        self.canvas.selected_node = nid
+        # Update the coord label to reflect the new position
+        self.lbl_sel_node.setText(f"Node #{nid}  (x={x:.4f}, y={y:.4f})")
+        self.mesh_generated.emit()
 
     def _node_map_get(self, dct, nid, default):
         return dct.get(nid, dct.get(str(nid), default))
@@ -1680,6 +1944,50 @@ class GeometryTab(QWidget):
         else:
             self.lbl_hand_strokes.setText(f"hand strokes: {len(strokes)}")
         self._update_edge_snap_preview()
+
+    def _update_mesh(self):
+        """Re-generate the mesh while preserving BCs, loads, and cracks."""
+        if self._mesh_data is None:
+            QMessageBox.information(self, "No Mesh",
+                "Generate a mesh first before updating.")
+            return
+        # Save current state
+        saved_bc    = dict(self._bc_nodes)
+        saved_load  = dict(self._load_nodes)
+        saved_cracks = list(self._crack_ys)
+        saved_strokes = [list(s) for s in self._hand_strokes]
+        saved_hand_ys = list(self._hand_crack_ys)
+        # Re-run standard generate
+        self._generate()
+        # Restore cracks (in case generate cleared them)
+        self._crack_ys = saved_cracks
+        self._hand_strokes = saved_strokes
+        self._hand_crack_ys = saved_hand_ys
+        # Restore BCs and loads (snap to closest new node if coords match)
+        new_nodes = self._mesh_data.get("nodes", {})
+        def _snap_to_new(old_nid, old_map_source):
+            """Find a node in the new mesh whose (x,y) matches the old node."""
+            # try same ID first
+            if old_nid in new_nodes:
+                return old_nid
+            return None
+        for nid, val in saved_bc.items():
+            new_nid = _snap_to_new(nid, saved_bc)
+            if new_nid is not None:
+                self._bc_nodes[new_nid] = val
+        for nid, val in saved_load.items():
+            new_nid = _snap_to_new(nid, saved_load)
+            if new_nid is not None:
+                self._load_nodes[new_nid] = val
+        self.canvas.set_bc_nodes(self._bc_nodes)
+        self.canvas.set_load_nodes(self._load_nodes)
+        self._update_bc_table()
+        self._update_load_table()
+        self.lbl_mesh_info.setText(
+            f"Mesh updated: {len(new_nodes)} nodes, "
+            f"{len(self._mesh_data.get('tris', []))} triangles, "
+            f"BCs and loads preserved."
+        )
 
     def _generate(self):
         # Merge any Y values the user typed but hasn't committed yet
@@ -1737,7 +2045,10 @@ class GeometryTab(QWidget):
                                crack_specs=snapped_specs,
                                snap_messages=snap_messages)
         # Preserve BCs and loads by snapping to nearest new node
-        self._bc_nodes = {}; self._load_nodes = {}
+        self._bc_nodes = {}
+        new_case_nodes = {}
+        self._load_cases[self._current_load_case]["nodes"] = new_case_nodes
+        self._load_nodes = new_case_nodes
         if (old_bc or old_ld) and prev_nodes:
             new_nids = sorted(nodes.keys())
             new_coords = [(nodes[n][0], nodes[n][1]) for n in new_nids]
@@ -1765,6 +2076,7 @@ class GeometryTab(QWidget):
         self.canvas.set_mesh(nodes, tris, crack_pairs, crack_rows, W, H)
         self.canvas.set_bc_nodes(self._bc_nodes)
         self.canvas.set_load_nodes(self._load_nodes)
+        self.canvas.set_grid(nx, ny)
         nn = len(nodes); nt = len(tris); nc = len(crack_pairs)
         self.lbl_mesh_info.setText(
             f"Mesh ready: {nn} nodes, {nt} triangles, {nc} crack links, "
@@ -1782,13 +2094,232 @@ class GeometryTab(QWidget):
                 f"Consider adjusting nx or ny to reduce aspect ratio below {max_ar:.1f}.\n"
                 f"Poor aspect ratios reduce solver accuracy and convergence.")
         self._update_bc_table(); self._update_load_table()
+        self.btn_update_mesh.setEnabled(True)
         self.mesh_generated.emit()
+
+    # ------------------------------------------------------------------
+    # External mesh import
+    # ------------------------------------------------------------------
+    def _import_external_mesh(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import External Mesh", "",
+            "Mesh files (*.json *.npz);;JSON (*.json);;NumPy NPZ (*.npz)")
+        if not path:
+            return
+        path = Path(path)
+        try:
+            if path.suffix.lower() == ".json":
+                import json as _json
+                with open(path, "r", encoding="utf-8") as fh:
+                    raw = _json.load(fh)
+                nodes, tris, crack_pairs = self._parse_imported_json(raw)
+                W = float(raw.get("W", 0.0))
+                H = float(raw.get("H", 0.0))
+            elif path.suffix.lower() == ".npz":
+                raw = np.load(path, allow_pickle=True)
+                nodes, tris, crack_pairs = self._parse_imported_npz(raw)
+                W = float(raw["W"]) if "W" in raw else 0.0
+                H = float(raw["H"]) if "H" in raw else 0.0
+            else:
+                QMessageBox.critical(self, "Unsupported Format",
+                    f"Extension '{path.suffix}' is not supported. Use .json or .npz.")
+                return
+        except Exception as exc:
+            QMessageBox.critical(self, "Load Error",
+                f"Could not read '{path.name}':\n\n{exc}")
+            return
+
+        # Derive panel bounds from node coords when not in file
+        if nodes:
+            xs = [x for x, y in nodes.values()]
+            ys = [y for x, y in nodes.values()]
+            if W <= 0: W = max(xs)
+            if H <= 0: H = max(ys)
+
+        # Validate references
+        errors = self._validate_imported_mesh(nodes, tris, crack_pairs)
+        if errors:
+            QMessageBox.critical(self, "Mesh Validation Failed",
+                "The imported mesh has the following errors:\n\n"
+                + "\n".join(f"  \u2022 {e}" for e in errors))
+            return
+
+        # Assemble crack metadata
+        crack_rows = set()   # no regular grid for external meshes
+        crack_ys   = sorted({round(float(cp[2]), 8) for cp in crack_pairs})
+
+        self._mesh_data = dict(
+            nodes=nodes, tris=tris, crack_pairs=crack_pairs,
+            crack_rows=crack_rows, W=W, H=H,
+            nx=0, ny=0,          # no regular grid
+            crack_ys=crack_ys, crack_specs=[], snap_messages=[])
+        self._bc_nodes  = {}
+        new_case_nodes = {}
+        self._load_cases[self._current_load_case]["nodes"] = new_case_nodes
+        self._load_nodes = new_case_nodes
+
+        self.canvas.set_mesh(nodes, tris, crack_pairs, crack_rows, W, H)
+        self.canvas.set_bc_nodes(self._bc_nodes)
+        self.canvas.set_load_nodes(self._load_nodes)
+        self.canvas.set_grid(0, 0)
+
+        nn = len(nodes); nt = len(tris); nc = len(crack_pairs)
+        msg = (f"External mesh loaded: {nn} nodes, {nt} triangles, "
+               f"{nc} crack pair(s).")
+        self.lbl_import_status.setText(msg)
+        self.lbl_import_status.setStyleSheet(f"color:{C2};")
+        self.lbl_mesh_info.setText(msg)
+        self.lbl_mesh_info.setStyleSheet(f"color:{C2};")
+        self._update_bc_table()
+        self._update_load_table()
+        self.mesh_generated.emit()
+        QMessageBox.information(self, "Mesh Imported", msg)
+
+    def _parse_imported_json(self, raw):
+        """Parse the JSON dict produced by Seth's mesher into internal tuples."""
+        # ---- nodes ----
+        raw_nodes = raw.get("nodes")
+        if raw_nodes is None:
+            raise ValueError("Missing required key 'nodes'")
+        if isinstance(raw_nodes, dict):
+            nodes = {}
+            for k, v in raw_nodes.items():
+                nid = int(k)
+                if isinstance(v, (list, tuple)) and len(v) >= 2:
+                    nodes[nid] = (float(v[0]), float(v[1]))
+                elif isinstance(v, dict):
+                    nodes[nid] = (float(v["x"]), float(v["y"]))
+                else:
+                    raise ValueError(
+                        f"Node '{k}': expected [x, y] or {{x, y}}, got {v!r}")
+        elif isinstance(raw_nodes, list):
+            # 1-indexed implicit IDs
+            nodes = {i + 1: (float(row[0]), float(row[1]))
+                     for i, row in enumerate(raw_nodes)}
+        else:
+            raise ValueError(
+                f"'nodes' must be a dict or list, got {type(raw_nodes).__name__}")
+
+        # ---- elements ----
+        raw_elems = raw.get("elements")
+        if raw_elems is None:
+            raise ValueError("Missing required key 'elements'")
+        tris = []
+        for i, e in enumerate(raw_elems):
+            e = [int(v) for v in e]
+            if len(e) == 3:
+                tris.append((i + 1, e[0], e[1], e[2]))
+            elif len(e) == 4:
+                tris.append((e[0], e[1], e[2], e[3]))
+            else:
+                raise ValueError(
+                    f"elements[{i}] has {len(e)} values; "
+                    f"expected [n1,n2,n3] or [eid,n1,n2,n3]")
+
+        # ---- crack_pairs ----
+        raw_cps = raw.get("crack_pairs")
+        if raw_cps is None:
+            raise ValueError("Missing required key 'crack_pairs'")
+        crack_pairs = self._coerce_crack_pairs(raw_cps, "crack_pairs")
+        return nodes, tris, crack_pairs
+
+    def _parse_imported_npz(self, raw):
+        """Parse a NumPy .npz archive into internal tuples."""
+        # ---- nodes ----
+        if "nodes" not in raw:
+            raise ValueError("Missing required array 'nodes' in NPZ")
+        nodes_arr = raw["nodes"]
+        if nodes_arr.ndim != 2 or nodes_arr.shape[1] < 2:
+            raise ValueError(
+                f"'nodes' must be shape (N, 2+), got {nodes_arr.shape}")
+        if "node_ids" in raw:
+            nids = [int(x) for x in raw["node_ids"].ravel()]
+        else:
+            nids = list(range(1, len(nodes_arr) + 1))
+        nodes = {nid: (float(nodes_arr[i, 0]), float(nodes_arr[i, 1]))
+                 for i, nid in enumerate(nids)}
+
+        # ---- elements ----
+        if "elements" not in raw:
+            raise ValueError("Missing required array 'elements' in NPZ")
+        ea = raw["elements"].astype(int)
+        if ea.ndim != 2:
+            raise ValueError(f"'elements' must be 2-D, got shape {ea.shape}")
+        if ea.shape[1] == 3:
+            tris = [(i + 1, int(ea[i, 0]), int(ea[i, 1]), int(ea[i, 2]))
+                    for i in range(len(ea))]
+        elif ea.shape[1] >= 4:
+            tris = [(int(ea[i, 0]), int(ea[i, 1]), int(ea[i, 2]), int(ea[i, 3]))
+                    for i in range(len(ea))]
+        else:
+            raise ValueError(
+                f"'elements' has {ea.shape[1]} column(s); need ≥ 3")
+
+        # ---- crack_pairs ----
+        if "crack_pairs" not in raw:
+            raise ValueError("Missing required array 'crack_pairs' in NPZ")
+        ca = raw["crack_pairs"]
+        if ca.ndim != 2 or ca.shape[1] < 4:
+            raise ValueError(
+                f"'crack_pairs' must be shape (C, 4+), got {ca.shape}")
+        crack_pairs = self._coerce_crack_pairs(ca.tolist(), "crack_pairs")
+        return nodes, tris, crack_pairs
+
+    @staticmethod
+    def _coerce_crack_pairs(raw_list, label):
+        """Normalise a list of crack-pair rows to the internal 8-tuple format."""
+        out = []
+        for i, cp in enumerate(raw_list):
+            if len(cp) < 4:
+                raise ValueError(
+                    f"{label}[{i}] has {len(cp)} value(s); "
+                    f"need at least 4: [nb, na, y, x]")
+            nb, na     = int(cp[0]),   int(cp[1])
+            y,  x      = float(cp[2]), float(cp[3])
+            tx  = float(cp[4]) if len(cp) > 4 else 1.0
+            ty  = float(cp[5]) if len(cp) > 5 else 0.0
+            cnx = float(cp[6]) if len(cp) > 6 else 0.0
+            cny = float(cp[7]) if len(cp) > 7 else 1.0
+            out.append((nb, na, y, x, tx, ty, cnx, cny))
+        return out
+
+    @staticmethod
+    def _validate_imported_mesh(nodes, tris, crack_pairs):
+        """Return a list of human-readable error strings (empty = valid)."""
+        errors = []
+        if not nodes:
+            errors.append("'nodes' is empty")
+        if not tris:
+            errors.append("'elements' is empty")
+
+        # Elements referencing unknown nodes
+        missing_elem = {n for _, n1, n2, n3 in tris
+                        for n in (n1, n2, n3) if n not in nodes}
+        if missing_elem:
+            sample = sorted(missing_elem)[:6]
+            errors.append(
+                f"{len(missing_elem)} node ID(s) in 'elements' not found in "
+                f"'nodes' (e.g. {sample})")
+
+        # Crack pairs referencing unknown nodes
+        missing_cp = {n for nb, na, *_ in crack_pairs
+                      for n in (nb, na) if n not in nodes}
+        if missing_cp:
+            sample = sorted(missing_cp)[:6]
+            errors.append(
+                f"{len(missing_cp)} node ID(s) in 'crack_pairs' not found in "
+                f"'nodes' (e.g. {sample})")
+
+        return errors
 
     def _on_node_clicked(self, nid):
         """
         Handle a UI event and keep the related state in sync.
         """
         self._selected_node = nid
+        if self._box_selected_nodes:
+            self._box_selected_nodes = []
+            self.canvas.set_box_selected([])
         md = self._mesh_data
         if md is None: return
         x, y = md["nodes"][nid]
@@ -1800,16 +2331,134 @@ class GeometryTab(QWidget):
         self.btn_apply_bc.setEnabled(True); self.btn_clear_node_bc.setEnabled(True)
         self.btn_apply_load.setEnabled(True); self.btn_clear_node_load.setEnabled(True)
 
+    def _on_node_double_clicked(self, nid):
+        """Show a context menu on double-click with delete/clear options."""
+        if self._mesh_data is None:
+            return
+        x, y = self._mesh_data["nodes"].get(nid, (0.0, 0.0))
+        has_bc   = self._node_map_get(self._bc_nodes, nid, None) is not None
+        has_load = self._node_map_get(self._load_nodes, nid, None) is not None
+        in_selection = nid in self.canvas._multi_selected
+
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            f"QMenu{{background:{BG_CARD};color:{TXT};border:1px solid {C1};"
+            f"padding:4px;}} "
+            f"QMenu::item{{padding:6px 18px;}} "
+            f"QMenu::item:selected{{background:{C1};color:{BG_DEEP};}}")
+
+        hdr = QAction(f"Node #{nid}  (x={x:.3f}, y={y:.3f})", self)
+        hdr.setEnabled(False)
+        menu.addAction(hdr)
+        menu.addSeparator()
+
+        if has_bc:
+            act_clear_bc = QAction("✕  Clear BC on this node", self)
+            act_clear_bc.triggered.connect(lambda: self._ctx_clear_bc(nid))
+            menu.addAction(act_clear_bc)
+        if has_load:
+            act_clear_ld = QAction("✕  Clear Load on this node", self)
+            act_clear_ld.triggered.connect(lambda: self._ctx_clear_load(nid))
+            menu.addAction(act_clear_ld)
+        if has_bc or has_load:
+            act_clear_both = QAction("✕  Clear both BC and Load", self)
+            act_clear_both.triggered.connect(lambda: self._ctx_clear_both(nid))
+            menu.addAction(act_clear_both)
+            menu.addSeparator()
+
+        if in_selection:
+            act_remove_sel = QAction("−  Remove from selection", self)
+            act_remove_sel.triggered.connect(lambda: self._ctx_remove_selection(nid))
+            menu.addAction(act_remove_sel)
+        else:
+            act_add_sel = QAction("+  Add to selection", self)
+            act_add_sel.triggered.connect(lambda: self._ctx_add_selection(nid))
+            menu.addAction(act_add_sel)
+
+        if self.canvas._multi_selected:
+            act_clear_all_sel = QAction("✕  Clear entire selection", self)
+            act_clear_all_sel.triggered.connect(self._ctx_clear_selection)
+            menu.addAction(act_clear_all_sel)
+
+        # Show at current cursor position
+        from PyQt5.QtGui import QCursor
+        menu.exec_(QCursor.pos())
+
+    def _ctx_clear_bc(self, nid):
+        self._node_map_pop(self._bc_nodes, nid)
+        self.canvas.set_bc_nodes(self._bc_nodes)
+        self._update_bc_table()
+
+    def _ctx_clear_load(self, nid):
+        self._node_map_pop(self._load_nodes, nid)
+        self.canvas.set_load_nodes(self._load_nodes)
+        self._update_load_table()
+
+    def _ctx_clear_both(self, nid):
+        self._ctx_clear_bc(nid)
+        self._ctx_clear_load(nid)
+
+    def _ctx_add_selection(self, nid):
+        self.canvas._multi_selected.add(nid)
+        self.canvas.update()
+
+    def _ctx_remove_selection(self, nid):
+        self.canvas._multi_selected.discard(nid)
+        # If this was the "last clicked" node, clear that reference too
+        if self.canvas.selected_node == nid:
+            # Pick another node from the set as the new "last clicked", or None
+            if self.canvas._multi_selected:
+                self.canvas.selected_node = next(iter(self.canvas._multi_selected))
+            else:
+                self.canvas.selected_node = None
+        # Also clear this node from bc/load editor if it was the selected one
+        if self._selected_node == nid:
+            if self.canvas._multi_selected:
+                self._selected_node = next(iter(self.canvas._multi_selected))
+            else:
+                self._selected_node = None
+                self.lbl_sel_node.setText("No node selected.")
+                self.btn_apply_bc.setEnabled(False)
+                self.btn_clear_node_bc.setEnabled(False)
+                self.btn_apply_load.setEnabled(False)
+                self.btn_clear_node_load.setEnabled(False)
+        # Update selection count label
+        n = len(self.canvas._multi_selected)
+        if n > 1:
+            self.lbl_sel_node.setText(f"{n} nodes selected")
+        elif n == 1:
+            only = next(iter(self.canvas._multi_selected))
+            md = self._mesh_data
+            if md:
+                x, y = md["nodes"].get(only, (0.0, 0.0))
+                self.lbl_sel_node.setText(f"Node #{only}  (x={x:.4f}, y={y:.4f})")
+        self.canvas.update()
+
+    def _ctx_clear_selection(self):
+        self.canvas._multi_selected = set()
+        self.canvas.selected_node = None
+        self._selected_node = None
+        self.lbl_sel_node.setText("No node selected.")
+        self.btn_apply_bc.setEnabled(False)
+        self.btn_clear_node_bc.setEnabled(False)
+        self.btn_apply_load.setEnabled(False)
+        self.btn_clear_node_load.setEnabled(False)
+        self.canvas.update()
+
     def _apply_bc_to_node(self):
-        if self._selected_node is None or self._mesh_data is None: return
-        nid = self._selected_node
+        if self._mesh_data is None: return
+        selected = list(self.canvas._multi_selected)
+        if not selected and self._selected_node is not None:
+            selected = [self._selected_node]
         fx = 1 if self.chk_fix_x.isChecked() else 0
         fy = 1 if self.chk_fix_y.isChecked() else 0
-        if fx or fy:
-            self._node_map_set(self._bc_nodes, nid, (fx, fy))
-        else:
-            self._node_map_pop(self._bc_nodes, nid)
-        self.canvas.set_bc_nodes(self._bc_nodes); self._update_bc_table()
+        for nid in selected:
+            if fx or fy:
+                self._node_map_set(self._bc_nodes, nid, (fx, fy))
+            else:
+                self._node_map_pop(self._bc_nodes, nid)
+        self.canvas.set_bc_nodes(self._bc_nodes)
+        self._update_bc_table()
 
     def _clear_node_bc(self):
         if self._selected_node is None: return
@@ -1835,14 +2484,19 @@ class GeometryTab(QWidget):
         self.canvas.set_bc_nodes(self._bc_nodes); self._update_bc_table()
 
     def _apply_load_to_node(self):
-        if self._selected_node is None or self._mesh_data is None: return
-        nid = self._selected_node
-        Fx = self.sb_node_Fx.value(); Fy = self.sb_node_Fy.value()
-        if abs(Fx) > 1e-12 or abs(Fy) > 1e-12:
-            self._node_map_set(self._load_nodes, nid, (Fx, Fy))
-        else:
-            self._node_map_pop(self._load_nodes, nid)
-        self.canvas.set_load_nodes(self._load_nodes); self._update_load_table()
+        if self._mesh_data is None: return
+        selected = list(self.canvas._multi_selected)
+        if not selected and self._selected_node is not None:
+            selected = [self._selected_node]
+        Fx = self.sb_node_Fx.value()
+        Fy = self.sb_node_Fy.value()
+        for nid in selected:
+            if abs(Fx) > 1e-12 or abs(Fy) > 1e-12:
+                self._node_map_set(self._load_nodes, nid, (Fx, Fy))
+            else:
+                self._node_map_pop(self._load_nodes, nid)
+        self.canvas.set_load_nodes(self._load_nodes)
+        self._update_load_table()
 
     def _clear_node_load(self):
         if self._selected_node is None: return
@@ -1865,6 +2519,132 @@ class GeometryTab(QWidget):
         self._load_nodes.clear()
         self.canvas.set_load_nodes(self._load_nodes); self._update_load_table()
 
+    # ------------------------------------------------------------------ #
+    # Load case manager methods                                            #
+    # ------------------------------------------------------------------ #
+    def _rebuild_load_case_combo(self):
+        self.cmb_load_case.blockSignals(True)
+        self.cmb_load_case.clear()
+        for name in self._load_cases:
+            self.cmb_load_case.addItem(name)
+        idx = self.cmb_load_case.findText(self._current_load_case)
+        if idx >= 0:
+            self.cmb_load_case.setCurrentIndex(idx)
+        self.cmb_load_case.blockSignals(False)
+
+    def _update_load_case_ui(self):
+        """Refresh sub-form widgets from the current load case dict."""
+        case = self._load_cases.get(self._current_load_case, {})
+        self.txt_lc_name.blockSignals(True)
+        self.txt_lc_name.setText(self._current_load_case)
+        self.txt_lc_name.blockSignals(False)
+        self.cmb_lc_ts_type.blockSignals(True)
+        self.cmb_lc_ts_type.setCurrentText(case.get("ts_type", "Constant"))
+        self.cmb_lc_ts_type.blockSignals(False)
+        self.txt_lc_desc.setText(case.get("description", ""))
+        self.txt_lc_expected.setText(case.get("expected_application", ""))
+        is_path = case.get("ts_type") == "Path"
+        self._grp_lc_path.setVisible(is_path)
+        self.tbl_lc_path.setRowCount(0)
+        for t, f in zip(case.get("path_time", []), case.get("path_factors", [])):
+            r = self.tbl_lc_path.rowCount()
+            self.tbl_lc_path.insertRow(r)
+            self.tbl_lc_path.setItem(r, 0, QTableWidgetItem(str(t)))
+            self.tbl_lc_path.setItem(r, 1, QTableWidgetItem(str(f)))
+
+    def _save_lc_meta(self):
+        """Write sub-form values back into current load case dict."""
+        case = self._load_cases.get(self._current_load_case)
+        if case is None:
+            return
+        case["ts_type"] = self.cmb_lc_ts_type.currentText()
+        case["description"] = self.txt_lc_desc.text()
+        case["expected_application"] = self.txt_lc_expected.text()
+        path_time = []; path_factors = []
+        for r in range(self.tbl_lc_path.rowCount()):
+            t_item = self.tbl_lc_path.item(r, 0)
+            f_item = self.tbl_lc_path.item(r, 1)
+            try:
+                path_time.append(float(t_item.text() if t_item else "0"))
+                path_factors.append(float(f_item.text() if f_item else "1"))
+            except ValueError:
+                pass
+        case["path_time"] = path_time
+        case["path_factors"] = path_factors
+
+    def _on_lc_ts_changed(self, ts_type):
+        self._save_lc_meta()
+        self._grp_lc_path.setVisible(ts_type == "Path")
+
+    def _on_load_case_changed(self, name):
+        self._save_lc_meta()
+        if name not in self._load_cases:
+            return
+        self._current_load_case = name
+        self._load_nodes = self._load_cases[name]["nodes"]
+        self.canvas.set_load_nodes(self._load_nodes)
+        self._update_load_case_ui()
+        self._update_load_table()
+
+    def _rename_load_case(self):
+        new_name = self.txt_lc_name.text().strip()
+        if not new_name or new_name == self._current_load_case:
+            return
+        if new_name in self._load_cases:
+            self.txt_lc_name.setText(self._current_load_case)
+            return
+        self._load_cases[new_name] = self._load_cases.pop(self._current_load_case)
+        self._current_load_case = new_name
+        self._rebuild_load_case_combo()
+
+    def _add_load_case(self):
+        self._save_lc_meta()
+        n = 1
+        while f"Case {n}" in self._load_cases:
+            n += 1
+        name = f"Case {n}"
+        self._load_cases[name] = {
+            "ts_type": "Constant", "description": "",
+            "expected_application": "",
+            "nodes": {},
+            "path_time": [], "path_factors": [],
+            "active": True, "scale": 1.0,
+        }
+        self._rebuild_load_case_combo()
+        self.cmb_load_case.setCurrentText(name)
+
+    def _remove_load_case(self):
+        if len(self._load_cases) <= 1:
+            QMessageBox.warning(self, "Cannot Remove",
+                "At least one load case must remain.")
+            return
+        name = self._current_load_case
+        ans = QMessageBox.question(self, "Remove Load Case",
+            f"Remove load case \u2018{name}\u2019 and all its nodal loads?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if ans != QMessageBox.Yes:
+            return
+        del self._load_cases[name]
+        self._current_load_case = next(iter(self._load_cases))
+        self._load_nodes = self._load_cases[self._current_load_case]["nodes"]
+        self.canvas.set_load_nodes(self._load_nodes)
+        self._rebuild_load_case_combo()
+        self._update_load_case_ui()
+        self._update_load_table()
+
+    def _add_path_row(self):
+        r = self.tbl_lc_path.rowCount()
+        self.tbl_lc_path.insertRow(r)
+        last_t = 0.0
+        if r > 0:
+            ti = self.tbl_lc_path.item(r - 1, 0)
+            try:
+                last_t = float(ti.text()) if ti else 0.0
+            except ValueError:
+                pass
+        self.tbl_lc_path.setItem(r, 0, QTableWidgetItem(str(last_t + 1.0)))
+        self.tbl_lc_path.setItem(r, 1, QTableWidgetItem("1.0"))
+
     def _clear_mesh(self):
         ans = QMessageBox.question(self, "Clear Mesh",
             "This will remove the mesh, all BCs, and all loads. Continue?",
@@ -1874,6 +2654,8 @@ class GeometryTab(QWidget):
         self._mesh_data = None
         self._bc_nodes.clear()
         self._load_nodes.clear()
+        for case in self._load_cases.values():
+            case["nodes"].clear()
         self.canvas.clear_mesh()
         self.canvas.set_bc_nodes(self._bc_nodes)
         self.canvas.set_load_nodes(self._load_nodes)
@@ -2039,8 +2821,21 @@ class GeometryTab(QWidget):
             p["mesh_crack_pairs"] = [list(cp) for cp in md["crack_pairs"]]
             p["crack_specs"]      = [dict(spec) for spec in md.get("crack_specs", [])]
             p["snap_messages"]    = list(md.get("snap_messages", []))
-        p["bc_nodes"]    = {str(k): list(v) for k, v in self._bc_nodes.items()}
-        p["load_nodes"]  = {str(k): list(v) for k, v in self._load_nodes.items()}
+        p["bc_nodes"]   = {str(k): list(v) for k, v in self._bc_nodes.items()}
+        p["load_nodes"] = {str(k): list(v) for k, v in self._load_nodes.items()}
+        p["load_cases"] = {
+            name: {
+                "ts_type":               case["ts_type"],
+                "description":           case["description"],
+                "expected_application":  case["expected_application"],
+                "nodes":                 {str(k): list(v) for k, v in case["nodes"].items()},
+                "path_time":             list(case["path_time"]),
+                "path_factors":          list(case["path_factors"]),
+                "active":                case.get("active", True),
+                "scale":                 case.get("scale", 1.0),
+            }
+            for name, case in self._load_cases.items()
+        }
         p["hand_crack_strokes"] = [[[pt[0], pt[1]] for pt in s]
                                    for s in self._hand_strokes]
         p["hand_crack_ys"]      = list(self._hand_crack_ys)
@@ -2102,7 +2897,36 @@ class GeometryTab(QWidget):
         self._on_mesh_mode_toggled()
         self._generate()
         self._bc_nodes = {int(k): tuple(v) for k, v in state.get("bc_nodes", {}).items()}
-        self._load_nodes = {int(k): tuple(v) for k, v in state.get("load_nodes", {}).items()}
+        raw_lc = state.get("load_cases", {})
+        if raw_lc:
+            self._load_cases = {}
+            for name, cdata in raw_lc.items():
+                self._load_cases[name] = {
+                    "ts_type":              str(cdata.get("ts_type", "Constant")),
+                    "description":          str(cdata.get("description", "")),
+                    "expected_application": str(cdata.get("expected_application", "")),
+                    "nodes":                {int(k): tuple(v) for k, v in cdata.get("nodes", {}).items()},
+                    "path_time":            [float(x) for x in cdata.get("path_time", [])],
+                    "path_factors":         [float(x) for x in cdata.get("path_factors", [])],
+                    "active":               bool(cdata.get("active", True)),
+                    "scale":                float(cdata.get("scale", 1.0)),
+                }
+            self._current_load_case = next(iter(self._load_cases))
+            self._load_nodes = self._load_cases[self._current_load_case]["nodes"]
+        else:
+            # Backward compat: single load_nodes dict from old project files
+            legacy_nodes = {int(k): tuple(v) for k, v in state.get("load_nodes", {}).items()}
+            self._load_cases = {"Default": {
+                "ts_type": "Constant", "description": "",
+                "expected_application": "Applied at t=0, held constant throughout",
+                "nodes": legacy_nodes,
+                "path_time": [], "path_factors": [],
+                "active": True, "scale": 1.0,
+            }}
+            self._current_load_case = "Default"
+            self._load_nodes = legacy_nodes
+        self._rebuild_load_case_combo()
+        self._update_load_case_ui()
         self.canvas.set_bc_nodes(self._bc_nodes)
         self.canvas.set_load_nodes(self._load_nodes)
         self._update_bc_table()
@@ -2113,6 +2937,16 @@ class GeometryTab(QWidget):
         self._mesh_data = None
         self._bc_nodes = {}
         self._load_nodes = {}
+        self._load_cases = {"Default": {
+            "ts_type": "Constant", "description": "",
+            "expected_application": "Applied at t=0, held constant throughout",
+            "nodes": self._load_nodes,
+            "path_time": [], "path_factors": [],
+            "active": True, "scale": 1.0,
+        }}
+        self._current_load_case = "Default"
+        self._rebuild_load_case_combo()
+        self._update_load_case_ui()
         self.canvas.set_mesh({}, [], [], set(), self.sb_W.value(), self.sb_H.value())
         self.canvas.set_bc_nodes(self._bc_nodes)
         self.canvas.set_load_nodes(self._load_nodes)
@@ -2388,6 +3222,26 @@ class CrackMaterialTab(QWidget):
             "CustomBilinear: piecewise linear force-displacement\n"
             "Calvi2015 (EPP-normal / Elastic-shear): bilinear normal+shear spring for Calvi 2015 validation"
         )
+
+        # Global material assignment — single-click to set one material on every row
+        grp_global = QGroupBox("Assign Global Material")
+        grp_global.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        gl = QHBoxLayout(grp_global)
+        gl.setContentsMargins(12, 10, 12, 10)
+        gl.setSpacing(10)
+        self.cmb_global_mat = _make_combo(mat_items, mat_tip)
+        self.cmb_global_mat.setMaximumWidth(300)
+        self.btn_apply_global = QPushButton("Apply to Entire Model")
+        self.btn_apply_global.setObjectName("warn")
+        self.btn_apply_global.setToolTip(
+            "Set every crack element to this material with default parameters "
+            "(kn=210, kt=5.95, gap=0.001, eta=0.02).\nAlso updates the Template dropdown.")
+        gl.addWidget(mk_lbl("Material:"))
+        gl.addWidget(self.cmb_global_mat)
+        gl.addSpacing(12)
+        gl.addWidget(self.btn_apply_global)
+        gl.addStretch()
+        outer.addWidget(grp_global)
 
         # Template group box
         grp_tmpl = QGroupBox("Template (applied to all cracks)")
@@ -2684,6 +3538,7 @@ class CrackMaterialTab(QWidget):
         self.btn_auto_knkt.clicked.connect(self._auto_kn_kt)
         self.btn_set_msc2d_defaults.clicked.connect(self._set_msc2d_defaults_template_all)
         self.btn_reset_msc2d_defaults.clicked.connect(self._reset_msc2d_defaults)
+        self.btn_apply_global.clicked.connect(self._apply_global_material)
         self.btn_preview.clicked.connect(self._run_preview)
         self.cmb_mat_sel.currentTextChanged.connect(self._update_material_type_visibility)
         self.cmb_mat_tmpl.currentTextChanged.connect(self._on_tmpl_mat_changed)
@@ -3042,6 +3897,31 @@ class CrackMaterialTab(QWidget):
         vals["epp_damage"] = bool(adv.get("epp_damage", False))
         return vals
 
+    def _apply_global_material(self):
+        if self.tbl.rowCount() == 0:
+            QMessageBox.information(self, "No Crack Elements",
+                "Generate a mesh with crack lines first,\n"
+                "then click Refresh from Geometry.")
+            return
+        ans = QMessageBox.question(
+            self, "Confirm Global Assignment",
+            "This will overwrite all crack element materials. Continue?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if ans != QMessageBox.Yes:
+            return
+        mat = self.cmb_global_mat.currentText()
+        self.cmb_mat_tmpl.setCurrentText(mat)
+        for r in range(self.tbl.rowCount()):
+            row_vals = self._row_values(r)
+            row_vals["mat_type"] = mat
+            row_vals["kn"]  = 210.0
+            row_vals["kt"]  = 5.95
+            row_vals["gap"] = 0.001
+            row_vals["eta"] = 0.02
+            self._set_row_values(r, row_vals)
+        if self.tbl.rowCount():
+            self.tbl.selectRow(0)
+
     def _apply_template_to_all(self):
         vals = self._template_values()
         for r in range(self.tbl.rowCount()):
@@ -3332,6 +4212,26 @@ QComboBox QAbstractItemView {{
         form.addRow("Load factor cap λ:",   self.sb_lam)
         outer.addWidget(grp_static)
 
+        grp_lca = QGroupBox("Load Case Activation")
+        lca_vbox = QVBoxLayout(grp_lca); lca_vbox.setSpacing(6)
+        lca_vbox.addWidget(mk_lbl(
+            "Tick which load cases are active, set time bounds and scale.\n"
+            "Click \u2018Refresh from Geometry\u2019 after editing load cases.", "sub"))
+        self.tbl_lc_activation = QTableWidget(0, 6)
+        self.tbl_lc_activation.setHorizontalHeaderLabels(
+            ["Load Case", "Time Series", "Active", "Start t", "End t", "Scale"])
+        self.tbl_lc_activation.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tbl_lc_activation.setMaximumHeight(160)
+        self.tbl_lc_activation.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.btn_lca_refresh = QPushButton("Refresh from Geometry")
+        self.btn_lca_refresh.setObjectName("flat")
+        self.lbl_lca_summary = mk_lbl("No load cases defined.", "sub")
+        self.lbl_lca_summary.setWordWrap(True)
+        lca_vbox.addWidget(self.tbl_lc_activation)
+        lca_vbox.addWidget(self.btn_lca_refresh)
+        lca_vbox.addWidget(self.lbl_lca_summary)
+        outer.addWidget(grp_lca)
+
         grp_lp = QGroupBox("Loading Protocol")
         flp = QFormLayout(grp_lp)
         flp.setSpacing(8)
@@ -3385,6 +4285,8 @@ QComboBox QAbstractItemView {{
         self.rb_monotonic.toggled.connect(self._update_protocol_visibility)
         self.btn_add_cycle.clicked.connect(self._add_cycle_row)
         self.btn_remove_cycle.clicked.connect(self._remove_last_cycle_row)
+        self.btn_lca_refresh.clicked.connect(self._lca_refresh_from_geo)
+        self.tbl_lc_activation.itemChanged.connect(self._update_lca_summary)
         self._update_protocol_labels()
         self._update_protocol_visibility()
         self._on_analysis_type_changed(self.cmb_type.currentText())
@@ -3445,8 +4347,99 @@ QComboBox QAbstractItemView {{
                 pass
         return cycles
 
+    def refresh_load_cases(self, load_cases):
+        """Populate the activation table from a load_cases dict (from geo.get_params())."""
+        old = {}
+        for r in range(self.tbl_lc_activation.rowCount()):
+            ni = self.tbl_lc_activation.item(r, 0)
+            if ni is None:
+                continue
+            name = ni.text()
+            chk = self.tbl_lc_activation.cellWidget(r, 2)
+            active = chk.isChecked() if chk else True
+            ti3 = self.tbl_lc_activation.item(r, 3)
+            ti4 = self.tbl_lc_activation.item(r, 4)
+            ti5 = self.tbl_lc_activation.item(r, 5)
+            old[name] = {
+                "active":  active,
+                "start_t": float(ti3.text() if ti3 and ti3.text() else "0"),
+                "end_t":   float(ti4.text() if ti4 and ti4.text() else "0"),
+                "scale":   float(ti5.text() if ti5 and ti5.text() else "1"),
+            }
+        self.tbl_lc_activation.blockSignals(True)
+        self.tbl_lc_activation.setRowCount(0)
+        for name, case in load_cases.items():
+            prev = old.get(name, {})
+            r = self.tbl_lc_activation.rowCount()
+            self.tbl_lc_activation.insertRow(r)
+            ts = case.get("ts_type", "Constant")
+            self.tbl_lc_activation.setItem(r, 0, QTableWidgetItem(name))
+            self.tbl_lc_activation.setItem(r, 1, QTableWidgetItem(ts))
+            chk = QCheckBox()
+            chk.setChecked(prev.get("active", bool(case.get("active", True))))
+            chk.stateChanged.connect(self._update_lca_summary)
+            self.tbl_lc_activation.setCellWidget(r, 2, chk)
+            self.tbl_lc_activation.setItem(r, 3, QTableWidgetItem(
+                str(prev.get("start_t", 0.0))))
+            self.tbl_lc_activation.setItem(r, 4, QTableWidgetItem(
+                str(prev.get("end_t", 0.0))))
+            self.tbl_lc_activation.setItem(r, 5, QTableWidgetItem(
+                str(prev.get("scale", float(case.get("scale", 1.0))))))
+        self.tbl_lc_activation.blockSignals(False)
+        self._update_lca_summary()
+
+    def _lca_refresh_from_geo(self):
+        win = self.window()
+        if hasattr(win, "geo"):
+            self.refresh_load_cases(win.geo.get_params().get("load_cases", {}))
+
+    def _update_lca_summary(self, *_):
+        lines = []
+        for r in range(self.tbl_lc_activation.rowCount()):
+            ni = self.tbl_lc_activation.item(r, 0)
+            if ni is None:
+                continue
+            name = ni.text()
+            ts_item = self.tbl_lc_activation.item(r, 1)
+            ts = ts_item.text() if ts_item else "Constant"
+            chk = self.tbl_lc_activation.cellWidget(r, 2)
+            active = chk.isChecked() if chk else True
+            st = self.tbl_lc_activation.item(r, 3)
+            et = self.tbl_lc_activation.item(r, 4)
+            sc = self.tbl_lc_activation.item(r, 5)
+            start_t = float(st.text() if st and st.text() else "0")
+            end_t   = float(et.text() if et and et.text() else "0")
+            scale   = sc.text() if sc else "1.0"
+            if active:
+                timing = ("always active" if start_t == 0 and end_t == 0
+                          else f"active t={start_t}\u2013{end_t}")
+                lines.append(f"Load case \u2018{name}\u2019: {ts} series, {timing}, scale={scale}")
+            else:
+                lines.append(f"Load case \u2018{name}\u2019: INACTIVE")
+        self.lbl_lca_summary.setText(
+            "\n".join(lines) if lines else "No load cases defined.")
+
+    def _lca_activation_params(self):
+        out = {}
+        for r in range(self.tbl_lc_activation.rowCount()):
+            ni = self.tbl_lc_activation.item(r, 0)
+            if ni is None:
+                continue
+            name = ni.text()
+            chk = self.tbl_lc_activation.cellWidget(r, 2)
+            active = chk.isChecked() if chk else True
+            def _fv(col, _r=r):
+                it = self.tbl_lc_activation.item(_r, col)
+                try:
+                    return float(it.text()) if it and it.text() else 0.0
+                except ValueError:
+                    return 0.0
+            out[name] = {"active": active, "start_t": _fv(3),
+                         "end_t": _fv(4), "scale": _fv(5)}
+        return out
+
     def get_params(self):
-        
+
         return {
             "analysis_type": self.cmb_type.currentText(),
             "ref_node": self.sb_ref_node.value(),
@@ -3467,6 +4460,7 @@ QComboBox QAbstractItemView {{
             "cycle_amplitude_scale": self.sb_cycle_scale.value(),
             "steps_per_half_cycle": self.sb_half_cycle_steps.value(),
             "custom_cycles": self._get_custom_cycles(),
+            "load_case_activation": self._lca_activation_params(),
         }
 
     def set_project_state(self, state):
@@ -3502,6 +4496,23 @@ QComboBox QAbstractItemView {{
                 pass
         self._update_protocol_labels()
         self._update_protocol_visibility()
+        lca_state = state.get("load_case_activation", {})
+        if lca_state:
+            for r in range(self.tbl_lc_activation.rowCount()):
+                ni = self.tbl_lc_activation.item(r, 0)
+                if ni is None:
+                    continue
+                name = ni.text()
+                if name in lca_state:
+                    row_data = lca_state[name]
+                    chk = self.tbl_lc_activation.cellWidget(r, 2)
+                    if chk:
+                        chk.setChecked(bool(row_data.get("active", True)))
+                    for col, key in ((3, "start_t"), (4, "end_t"), (5, "scale")):
+                        it = self.tbl_lc_activation.item(r, col)
+                        if it:
+                            it.setText(str(row_data.get(key, 0.0 if key != "scale" else 1.0)))
+        self._update_lca_summary()
 
     def reset_project_state(self):
         self.set_project_state({})
@@ -4913,18 +5924,61 @@ def run_model_2d(p):
 
             _log(f"rebar truss elements created: {n_rebar_created}/{len(rebar_definitions)}")
 
-        # apply nodal loads
-        load_nodes = p.get('load_nodes', {})
-        if not load_nodes:
+        # apply nodal loads — multi-case aware
+        load_cases = p.get('load_cases', {})
+        load_nodes = p.get('load_nodes', {})   # backward compat (old project files)
+
+        if not load_cases and not load_nodes:
             raise RuntimeError("No loads applied. Assign loads on the Geometry tab.")
 
-        ops.timeSeries('Linear', 1)
-        ops.pattern('Plain', 1, 1)
-        for nid_str, (Fx, Fy) in load_nodes.items():
-            ops.load(int(nid_str), float(Fx), float(Fy))
+        ts_id = 1; pat_id = 1
+        has_const_pattern = False
 
-        # don't call loadConst('-time', 0.0) here
-        # it resets reference load and can break DisplacementControl at step 0.
+        if load_cases:
+            for case_name, case in load_cases.items():
+                case_nodes = case.get('nodes', {})
+                if not case.get('active', True) or not case_nodes:
+                    continue
+                ts_type    = str(case.get('ts_type', 'Constant'))
+                scale      = float(case.get('scale', 1.0))
+                path_time  = [float(x) for x in case.get('path_time', [])]
+                path_factors = [float(x) for x in case.get('path_factors', [])]
+                if ts_type == 'Constant':
+                    ops.timeSeries('Constant', ts_id)
+                    has_const_pattern = True
+                elif ts_type == 'Linear':
+                    ops.timeSeries('Linear', ts_id)
+                elif ts_type == 'Path' and path_time and path_factors:
+                    ops.timeSeries('Path', ts_id,
+                                   '-time', path_time, '-values', path_factors)
+                else:
+                    ops.timeSeries('Constant', ts_id)
+                    has_const_pattern = True
+                ops.pattern('Plain', pat_id, ts_id, '-fact', scale)
+                for nid_str, fv in case_nodes.items():
+                    Fx, Fy = float(fv[0]), float(fv[1])
+                    ops.load(int(nid_str), Fx, Fy)
+                _log(f"Load case '{case_name}': {ts_type} pattern {pat_id}, "
+                     f"{len(case_nodes)} nodes, scale={scale}")
+                ts_id += 1; pat_id += 1
+            # Hold constant-type patterns before cyclic application begins
+            if has_const_pattern:
+                ops.loadConst('-time', 0.0)
+            # Build combined load_nodes for ref-DOF auto-detection below
+            load_nodes = {}
+            for case in load_cases.values():
+                if case.get('active', True):
+                    for k, v in case.get('nodes', {}).items():
+                        load_nodes[str(k)] = (float(v[0]), float(v[1]))
+        else:
+            # Backward compat: single load block (old project files)
+            ops.timeSeries('Linear', 1)
+            ops.pattern('Plain', 1, 1)
+            for nid_str, fv in load_nodes.items():
+                Fx, Fy = float(fv[0]), float(fv[1])
+                ops.load(int(nid_str), Fx, Fy)
+            load_nodes = {str(k): (float(v[0]), float(v[1]))
+                          for k, v in load_nodes.items()}
 
         fixed_nids = [int(k) for k in bc_nodes.keys()]
 
@@ -5495,6 +6549,8 @@ class MainWindow(QMainWindow):
         self._update_window_title()
 
         self.geo.mesh_generated.connect(lambda: self.crk.refresh_from_geometry(self.geo))
+        self.geo.mesh_generated.connect(
+            lambda: self.anl.refresh_load_cases(self.geo.get_params().get("load_cases", {})))
 
         QTimer.singleShot(900, self.check_wsl)
 
