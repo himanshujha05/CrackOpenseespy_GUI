@@ -77,70 +77,107 @@ TXTS     = "#b8c2cf"
 CRACK_BELOW = "#ff8c42"   # orange  — node on the BELOW side of a crack
 CRACK_ABOVE = "#c084fc"   # violet  — node on the ABOVE side of a crack
 
-STYLE = f"""
-QMainWindow,QDialog{{background:{BG_DEEP};}}
-QWidget{{background:{BG_DEEP};color:{TXT};
-  font-family:'Segoe UI','Cascadia Code','Consolas',sans-serif;font-size:13px;}}
-QScrollArea,QScrollArea>QWidget,QScrollArea>QWidget>QWidget{{background:{BG_DEEP};}}
-QTabWidget::pane{{border:1px solid {BORDER};background:{BG_PANEL};border-radius:0 4px 4px 4px;}}
-QTabBar::tab{{background:{BG_DEEP};color:{TXTS};padding:9px 20px;
-  border:1px solid {BORDER};border-bottom:none;border-radius:4px 4px 0 0;
-    font-weight:bold;font-size:12px;margin-right:2px;min-height:20px;}}
-QTabBar::tab:selected{{background:{BG_PANEL};color:{C1};border-bottom:2px solid {C1};}}
-QTabBar::tab:hover:!selected{{color:{TXT};background:{BG_CARD};}}
-QGroupBox{{border:1px solid {BORDER};border-radius:6px;margin-top:16px;
-    padding:16px 12px 12px 12px;color:{C1};font-weight:bold;font-size:12px;letter-spacing:.6px;}}
-QGroupBox::title{{subcontrol-origin:margin;left:12px;padding:0 8px;background:{BG_PANEL};}}
+# ── Theme system ─────────────────────────────────────────────
+THEMES = {
+        "dark": {
+                "BG_DEEP": "#0d1117", "BG_PANEL": "#161b22", "BG_CARD": "#1c2128",
+                "BG_INPUT": "#111827", "BORDER": "#455063",
+                "C1": "#58a6ff", "C2": "#3fb950", "C3": "#f78166", "C4": "#d2a679",
+                "TXT": "#e6edf3", "TXTS": "#b8c2cf",
+                "CRACK_BELOW": "#ff8c42", "CRACK_ABOVE": "#c084fc",
+        },
+        "light": {
+                "BG_DEEP": "#f5f5f5", "BG_PANEL": "#ffffff", "BG_CARD": "#e8ecf0",
+                "BG_INPUT": "#ffffff", "BORDER": "#c0c8d0",
+                "C1": "#0366d6", "C2": "#28a745", "C3": "#d73a49", "C4": "#b08030",
+                "TXT": "#1a1a1a", "TXTS": "#555555",
+                "CRACK_BELOW": "#e65100", "CRACK_ABOVE": "#7b1fa2",
+        },
+}
+CURRENT_THEME = "dark"
+
+
+def _build_style(theme_name):
+        """Build the full QSS stylesheet from a theme dict."""
+        t = THEMES[theme_name]
+        return f"""
+QMainWindow,QDialog{{background:{t['BG_DEEP']};}}
+QWidget{{background:{t['BG_DEEP']};color:{t['TXT']};
+    font-family:'Segoe UI','Cascadia Code','Consolas',sans-serif;font-size:13px;}}
+QScrollArea,QScrollArea>QWidget,QScrollArea>QWidget>QWidget{{background:{t['BG_DEEP']};}}
+QTabWidget::pane{{border:1px solid {t['BORDER']};background:{t['BG_PANEL']};border-radius:0 4px 4px 4px;}}
+QTabBar::tab{{background:{t['BG_DEEP']};color:{t['TXTS']};padding:9px 20px;
+    border:1px solid {t['BORDER']};border-bottom:none;border-radius:4px 4px 0 0;
+        font-weight:bold;font-size:12px;margin-right:2px;min-height:20px;}}
+QTabBar::tab:selected{{background:{t['BG_PANEL']};color:{t['C1']};border-bottom:2px solid {t['C1']};}}
+QTabBar::tab:hover:!selected{{color:{t['TXT']};background:{t['BG_CARD']};}}
+QGroupBox{{border:1px solid {t['BORDER']};border-radius:6px;margin-top:16px;
+        padding:16px 12px 12px 12px;color:{t['C1']};font-weight:bold;font-size:12px;letter-spacing:.6px;}}
+QGroupBox::title{{subcontrol-origin:margin;left:12px;padding:0 8px;background:{t['BG_PANEL']};}}
 QLineEdit,QDoubleSpinBox,QSpinBox,QComboBox{{
-  background:{BG_INPUT};border:1px solid {BORDER};border-radius:4px;
-    padding:6px 10px;color:{TXT};font-size:13px;min-height:32px;
-    selection-background-color:{C1};selection-color:{BG_DEEP};}}
+    background:{t['BG_INPUT']};border:1px solid {t['BORDER']};border-radius:4px;
+        padding:6px 10px;color:{t['TXT']};font-size:13px;min-height:32px;
+        selection-background-color:{t['C1']};selection-color:{t['BG_DEEP']};}}
 QLineEdit:focus,QDoubleSpinBox:focus,QSpinBox:focus,QComboBox:focus{{
-  border:1px solid {C1};background:{BG_CARD};}}
+    border:1px solid {t['C1']};background:{t['BG_CARD']};}}
 QComboBox{{padding-right:30px;}}
-QComboBox QAbstractItemView{{background:{BG_CARD};border:1px solid {BORDER};
-  selection-background-color:{C1};color:{TXT};}}
+QComboBox QAbstractItemView{{background:{t['BG_CARD']};border:1px solid {t['BORDER']};
+    selection-background-color:{t['C1']};color:{t['TXT']};}}
 QComboBox::drop-down{{border:none;width:22px;}}
-QPushButton{{background:{C1};color:{BG_DEEP};border-radius:5px;padding:8px 20px;
-    font-weight:bold;font-size:12px;border:1px solid transparent;min-height:34px;}}
+QPushButton{{background:{t['C1']};color:{t['BG_DEEP']};border-radius:5px;padding:8px 20px;
+        font-weight:bold;font-size:12px;border:1px solid transparent;min-height:34px;}}
 QPushButton:hover{{background:#79b8ff;}}
 QPushButton:pressed{{background:#388bfd;}}
-QPushButton:disabled{{background:{BORDER};color:{TXTS};}}
-QPushButton#danger{{background:{C3};color:{BG_DEEP};}}
+QPushButton:disabled{{background:{t['BORDER']};color:{t['TXTS']};}}
+QPushButton#danger{{background:{t['C3']};color:{t['BG_DEEP']};}}
 QPushButton#danger:hover{{background:#ff7b72;}}
-QPushButton#success{{background:{C2};color:{BG_DEEP};font-size:13px;font-weight:bold;}}
+QPushButton#success{{background:{t['C2']};color:{t['BG_DEEP']};font-size:13px;font-weight:bold;}}
 QPushButton#success:hover{{background:#56d364;}}
-QPushButton#success:disabled{{background:{BORDER};color:{TXTS};}}
-QPushButton#flat{{background:{BG_CARD};color:{TXTS};border:1px solid {BORDER};}}
-QPushButton#flat:hover{{color:{TXT};border-color:{TXTS};}}
-QPushButton#flat:disabled{{background:{BG_DEEP};color:{BORDER};border-color:{BORDER};}}
-QPushButton#amber{{background:{C4};color:{BG_DEEP};font-weight:bold;}}
+QPushButton#success:disabled{{background:{t['BORDER']};color:{t['TXTS']};}}
+QPushButton#flat{{background:{t['BG_CARD']};color:{t['TXTS']};border:1px solid {t['BORDER']};}}
+QPushButton#flat:hover{{color:{t['TXT']};border-color:{t['TXTS']};}}
+QPushButton#flat:disabled{{background:{t['BG_DEEP']};color:{t['BORDER']};border-color:{t['BORDER']};}}
+QPushButton#amber{{background:{t['C4']};color:{t['BG_DEEP']};font-weight:bold;}}
 QPushButton#amber:hover{{background:#e5c07b;}}
-QPushButton#warn{{background:{C4};color:{BG_DEEP};font-weight:bold;font-size:12px;}}
-QTableWidget{{background:{BG_INPUT};gridline-color:{BORDER};
-  border:1px solid {BORDER};border-radius:4px;color:{TXT};}}
-QHeaderView::section{{background:{BG_CARD};color:{C1};padding:7px;
-  border:none;border-right:1px solid {BORDER};border-bottom:1px solid {BORDER};
-  font-weight:bold;font-size:11px;}}
-QTableWidget::item:selected{{background:{C1};color:{BG_DEEP};}}
-QTextEdit{{background:{BG_INPUT};color:#b5cfe9;border:1px solid {BORDER};
-  border-radius:4px;font-family:'Cascadia Code','Fira Code','Consolas',monospace;font-size:12px;}}
-QScrollBar:vertical{{background:{BG_INPUT};width:8px;border-radius:4px;}}
-QScrollBar::handle:vertical{{background:{BORDER};border-radius:4px;min-height:20px;}}
-QScrollBar::handle:vertical:hover{{background:{TXTS};}}
+QPushButton#warn{{background:{t['C4']};color:{t['BG_DEEP']};font-weight:bold;font-size:12px;}}
+QTableWidget{{background:{t['BG_INPUT']};gridline-color:{t['BORDER']};
+    border:1px solid {t['BORDER']};border-radius:4px;color:{t['TXT']};}}
+QHeaderView::section{{background:{t['BG_CARD']};color:{t['C1']};padding:7px;
+    border:none;border-right:1px solid {t['BORDER']};border-bottom:1px solid {t['BORDER']};
+    font-weight:bold;font-size:11px;}}
+QTableWidget::item:selected{{background:{t['C1']};color:{t['BG_DEEP']};}}
+QTextEdit{{background:{t['BG_INPUT']};color:#b5cfe9;border:1px solid {t['BORDER']};
+    border-radius:4px;font-family:'Cascadia Code','Fira Code','Consolas',monospace;font-size:12px;}}
+QScrollBar:vertical{{background:{t['BG_INPUT']};width:8px;border-radius:4px;}}
+QScrollBar::handle:vertical{{background:{t['BORDER']};border-radius:4px;min-height:20px;}}
+QScrollBar::handle:vertical:hover{{background:{t['TXTS']};}}
 QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{{height:0;}}
 QScrollBar:horizontal{{height:0px;}}
-QLabel#heading{{color:{C1};font-size:18px;font-weight:bold;letter-spacing:1px;}}
-QLabel#sub{{color:{TXTS};font-size:12px;line-height:1.35;}}
-QLabel#param{{color:{C4};font-size:12px;font-weight:bold;}}
-QToolTip{{background:{BG_CARD};color:{TXT};border:1px solid {C1};padding:6px;
-  border-radius:4px;font-size:12px;}}
-QCheckBox{{color:{TXT};spacing:8px;font-size:13px;}}
-QCheckBox::indicator{{width:15px;height:15px;border:1px solid {BORDER};
-  border-radius:3px;background:{BG_INPUT};}}
-QCheckBox::indicator:checked{{background:{C1};border-color:{C1};}}
-QFormLayout QLabel{{color:{TXT};font-size:13px;}}
+QLabel#heading{{color:{t['C1']};font-size:18px;font-weight:bold;letter-spacing:1px;}}
+QLabel#sub{{color:{t['TXTS']};font-size:12px;line-height:1.35;}}
+QLabel#param{{color:{t['C4']};font-size:12px;font-weight:bold;}}
+QToolTip{{background:{t['BG_CARD']};color:{t['TXT']};border:1px solid {t['C1']};padding:6px;
+    border-radius:4px;font-size:12px;}}
+QCheckBox{{color:{t['TXT']};spacing:8px;font-size:13px;}}
+QCheckBox::indicator{{width:15px;height:15px;border:1px solid {t['BORDER']};
+    border-radius:3px;background:{t['BG_INPUT']};}}
+QCheckBox::indicator:checked{{background:{t['C1']};border-color:{t['C1']};}}
+QFormLayout QLabel{{color:{t['TXT']};font-size:13px;}}
 """
+
+
+def _apply_theme(theme_name):
+        """Update the global color variables to match the selected theme."""
+        global BG_DEEP, BG_PANEL, BG_CARD, BG_INPUT, BORDER
+        global C1, C2, C3, C4, TXT, TXTS, CRACK_BELOW, CRACK_ABOVE
+        global CURRENT_THEME
+        t = THEMES[theme_name]
+        BG_DEEP = t["BG_DEEP"]; BG_PANEL = t["BG_PANEL"]; BG_CARD = t["BG_CARD"]
+        BG_INPUT = t["BG_INPUT"]; BORDER = t["BORDER"]
+        C1 = t["C1"]; C2 = t["C2"]; C3 = t["C3"]; C4 = t["C4"]
+        TXT = t["TXT"]; TXTS = t["TXTS"]
+        CRACK_BELOW = t["CRACK_BELOW"]; CRACK_ABOVE = t["CRACK_ABOVE"]
+        CURRENT_THEME = theme_name
 
 APP_CONFIG_FILE = Path(__file__).with_name("panel_gui_config.json")
 PROJECT_FILE_VERSION = "1.0"
@@ -408,6 +445,8 @@ class PanelMeshCanvas(QWidget):
     hand_strokes_changed = pyqtSignal()
     hand_stroke_erased   = pyqtSignal(int)
     mode_exited_draw     = pyqtSignal()
+    zoom_repositioned    = pyqtSignal()
+    zoom_changed         = pyqtSignal(float)
 
     MODE_SELECT = "select"
     MODE_CRACK  = "crack"
@@ -449,6 +488,12 @@ class PanelMeshCanvas(QWidget):
         self._bg_image    = QImage()
         self._bg_path     = ""
         self._highlighted_pairs = set()
+        # Zoom and pan state
+        self._zoom = 1.0
+        self._pan_x = 0.0
+        self._pan_y = 0.0
+        self._panning = False
+        self._pan_start = None
         # node-drag state (MODE_SELECT)
         self._drag_nid      = None   # nid being dragged, or None
         self._dragging      = False  # True once mouse has moved past threshold
@@ -462,23 +507,62 @@ class PanelMeshCanvas(QWidget):
 
     def _scale(self):
         ml, mt, mr, mb = self._margins()
-        dw = self.width() - ml - mr; dh = self.height() - mt - mb
-        sx = dw / max(self.panel_W, 1e-6); sy = dh / max(self.panel_H, 1e-6)
-        return min(sx, sy)
+        dw = self.width() - ml - mr
+        dh = self.height() - mt - mb
+        sx = dw / max(self.panel_W, 1e-6)
+        sy = dh / max(self.panel_H, 1e-6)
+        return min(sx, sy) * self._zoom
 
     def _to_px(self, mx, my):
         ml, mt, mr, mb = self._margins()
-        dw = self.width() - ml - mr; dh = self.height() - mt - mb
+        dw = self.width() - ml - mr
+        dh = self.height() - mt - mb
         sc = self._scale()
-        ox = ml + (dw - sc * self.panel_W) / 2; oy = mt + (dh - sc * self.panel_H) / 2
+        ox = ml + (dw - sc * self.panel_W) / 2 + self._pan_x
+        oy = mt + (dh - sc * self.panel_H) / 2 + self._pan_y
         return int(ox + mx * sc), int(oy + (self.panel_H - my) * sc)
 
     def _to_model(self, px, py):
         ml, mt, mr, mb = self._margins()
-        dw = self.width() - ml - mr; dh = self.height() - mt - mb
+        dw = self.width() - ml - mr
+        dh = self.height() - mt - mb
         sc = self._scale()
-        ox = ml + (dw - sc * self.panel_W) / 2; oy = mt + (dh - sc * self.panel_H) / 2
+        ox = ml + (dw - sc * self.panel_W) / 2 + self._pan_x
+        oy = mt + (dh - sc * self.panel_H) / 2 + self._pan_y
         return (px - ox) / sc, self.panel_H - (py - oy) / sc
+
+    def wheelEvent(self, event):
+        """Ctrl+wheel to zoom, plain wheel ignored so page scrolling works."""
+        if event.modifiers() & Qt.ControlModifier:
+            # Zoom toward the cursor position
+            px, py = event.x(), event.y()
+            mx_before, my_before = self._to_model(px, py)
+            delta = event.angleDelta().y()
+            factor = 1.15 if delta > 0 else 1 / 1.15
+            new_zoom = max(0.2, min(10.0, self._zoom * factor))
+            self._zoom = new_zoom
+            # Adjust pan so the mouse stays over the same model point
+            mx_after, my_after = self._to_model(px, py)
+            sc = self._scale()
+            self._pan_x += (mx_after - mx_before) * sc
+            self._pan_y -= (my_after - my_before) * sc
+            self.zoom_changed.emit(self._zoom)
+            self.update()
+            event.accept()
+        else:
+            event.ignore()
+
+    def _reset_view(self):
+        """Reset zoom and pan to fit the panel."""
+        self._zoom = 1.0
+        self._pan_x = 0.0
+        self._pan_y = 0.0
+        self.zoom_changed.emit(self._zoom)
+        self.update()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.zoom_repositioned.emit()
 
     def _node_near(self, px, py, r=9):
         best, bd = None, r * r
@@ -594,6 +678,11 @@ class PanelMeshCanvas(QWidget):
         """
         Handle a UI event and keep the related state in sync.
         """
+        if event.button() == Qt.MiddleButton:
+            self._panning = True
+            self._pan_start = (event.x(), event.y(), self._pan_x, self._pan_y)
+            self.setCursor(Qt.ClosedHandCursor)
+            return
         px, py = event.x(), event.y()
         if self.mode == self.MODE_DRAW and event.button() == Qt.RightButton:
             mx, my = self._to_model(px, py)
@@ -646,6 +735,12 @@ class PanelMeshCanvas(QWidget):
             self.node_double_clicked.emit(nid)
 
     def mouseMoveEvent(self, event):
+        if self._panning and self._pan_start:
+            sx, sy, px0, py0 = self._pan_start
+            self._pan_x = px0 + (event.x() - sx)
+            self._pan_y = py0 + (event.y() - sy)
+            self.update()
+            return
         self._hover_model = self._to_model(event.x(), event.y())
         if self.mode == self.MODE_SELECT and self._drag_nid is not None:
             if not self._dragging:
@@ -678,6 +773,11 @@ class PanelMeshCanvas(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MiddleButton and self._panning:
+            self._panning = False
+            self._pan_start = None
+            self.setCursor(Qt.ArrowCursor)
+            return
         if (self.mode == self.MODE_SELECT and self._drag_nid is not None
                 and event.button() == Qt.LeftButton):
             if self._dragging:
@@ -939,6 +1039,7 @@ class PanelMeshCanvas(QWidget):
         """
         Keep this part of the workflow stable and explicit for future debugging.
         """
+        p.fillRect(0, 0, W, H, QColor(BG_PANEL))
         if self.panel_W > 0 and self.panel_H > 0:
             self._draw_background(p)
             x0, y0 = self._to_px(0, 0); x1, y1 = self._to_px(self.panel_W, self.panel_H)
@@ -1295,39 +1396,78 @@ class GeometryTab(QWidget):
         self._grp_lc_detail = QGroupBox("Case Settings")
         self._grp_lc_detail.setFlat(True)
         fdet = QFormLayout(self._grp_lc_detail)
-        fdet.setSpacing(4); fdet.setContentsMargins(4, 4, 4, 4)
+        fdet.setSpacing(6); fdet.setContentsMargins(6, 6, 6, 6)
+
         self.txt_lc_name = QLineEdit("Default")
         self.txt_lc_name.setToolTip("Rename this load case")
+
         self.cmb_lc_ts_type = QComboBox()
         self.cmb_lc_ts_type.addItems(["Constant", "Linear", "Path"])
         self.cmb_lc_ts_type.setToolTip(
-            "Constant: load held steady throughout\n"
-            "Linear: load scales linearly with pseudo-time\n"
-            "Path: user-defined time\u2013factor curve")
+            "Constant:  load applied at full value immediately, held steady throughout.\n"
+            "           Example: constant gravity or compression.\n\n"
+            "Linear:    load scales linearly with pseudo-time (0 at t=0, full at t=1).\n"
+            "           Example: monotonically increasing shear.\n\n"
+            "Path:      user-defined time vs load-factor curve.\n"
+            "           Example: cyclic loading, ramp-hold-release.")
+
         self.txt_lc_desc = QLineEdit()
-        self.txt_lc_desc.setPlaceholderText("e.g. Constant compression held across crack")
+        self.txt_lc_desc.setPlaceholderText("e.g. Constant compression on top edge")
+
         self.txt_lc_expected = QLineEdit()
-        self.txt_lc_expected.setPlaceholderText("e.g. Applied at t=0, held constant throughout")
+        self.txt_lc_expected.setPlaceholderText("e.g. Applied at t=0, held constant throughout analysis")
+
+        # Visual summary label that explains the behavior in plain English
+        self.lbl_lc_behavior = mk_lbl("", "sub")
+        self.lbl_lc_behavior.setWordWrap(True)
+        self.lbl_lc_behavior.setStyleSheet(f"color:{C4};font-size:11px;padding:4px;")
+
         fdet.addRow("Name:", self.txt_lc_name)
         fdet.addRow("Time series:", self.cmb_lc_ts_type)
         fdet.addRow("Description:", self.txt_lc_desc)
-        fdet.addRow("Application:", self.txt_lc_expected)
+        fdet.addRow("Expected application:", self.txt_lc_expected)
+        fdet.addRow("Behavior:", self.lbl_lc_behavior)
 
-        # Path table (shown only when ts_type == "Path")
-        self._grp_lc_path = QGroupBox("Path Definition")
+        # Path table (visible only when ts_type == "Path")
+        self._grp_lc_path = QGroupBox("Path Definition (time vs load factor)")
         self._grp_lc_path.setFlat(True)
         vpath = QVBoxLayout(self._grp_lc_path); vpath.setSpacing(4)
+        vpath.addWidget(mk_lbl(
+            "Define load factor at each time point.\n"
+            "Factor = 1.0 means full applied load, 0.0 means zero.", "sub"))
         self.tbl_lc_path = QTableWidget(0, 2)
         self.tbl_lc_path.setHorizontalHeaderLabels(["Time", "Load Factor"])
         self.tbl_lc_path.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.tbl_lc_path.setMaximumHeight(90)
-        self.btn_add_path_row = QPushButton("+ Row")
+        self.tbl_lc_path.setMaximumHeight(120)
+
+        path_btn_row = QHBoxLayout()
+        self.btn_add_path_row = QPushButton("+ Add Row")
         self.btn_add_path_row.setObjectName("flat")
-        self.btn_add_path_row.setMaximumWidth(60)
+        self.btn_add_path_row.setMinimumWidth(90)
+        self.btn_remove_path_row = QPushButton("− Remove Last")
+        self.btn_remove_path_row.setObjectName("flat")
+        self.btn_remove_path_row.setMinimumWidth(100)
+        self.btn_preset_ramp = QPushButton("Preset: Ramp")
+        self.btn_preset_ramp.setObjectName("flat")
+        self.btn_preset_ramp.setToolTip("Fill table with a linear ramp: 0→1 over t=0 to 1")
+        self.btn_preset_cycle = QPushButton("Preset: Cycle")
+        self.btn_preset_cycle.setObjectName("flat")
+        self.btn_preset_cycle.setToolTip("Fill table with one full cycle: 0→1→-1→0")
+        self.btn_preset_hold = QPushButton("Preset: Ramp-Hold")
+        self.btn_preset_hold.setObjectName("flat")
+        self.btn_preset_hold.setToolTip("Fill table with ramp then hold: 0→1 then hold at 1")
+        path_btn_row.addWidget(self.btn_add_path_row)
+        path_btn_row.addWidget(self.btn_remove_path_row)
+        path_btn_row.addWidget(self.btn_preset_ramp)
+        path_btn_row.addWidget(self.btn_preset_cycle)
+        path_btn_row.addWidget(self.btn_preset_hold)
+        path_btn_row.addStretch()
+
         vpath.addWidget(self.tbl_lc_path)
-        vpath.addWidget(self.btn_add_path_row)
-        fdet.addRow("Path:", self._grp_lc_path)
+        vpath.addLayout(path_btn_row)
+        fdet.addRow("", self._grp_lc_path)
         self._grp_lc_path.setVisible(False)
+
         vld.addWidget(self._grp_lc_detail)
 
         # Quick-assign
@@ -1442,10 +1582,22 @@ class GeometryTab(QWidget):
         #right panel: mesh canvas 
         right = QWidget(); right.setStyleSheet(f"background:{BG_PANEL};")
         rv = QVBoxLayout(right); rv.setContentsMargins(8, 16, 16, 16); rv.setSpacing(6)
-        mode_row = QHBoxLayout()
-        self.lbl_canvas_hint = mk_lbl("Select mode: click a node to assign BC / load", "sub")
+        # Canvas header — two rows: top = hint + mode, bottom = zoom + toggles
+        canvas_top = QHBoxLayout()
+        canvas_top.setSpacing(8)
+        self.lbl_canvas_hint = mk_lbl("Select: click a node to assign BC / load", "sub")
+        self.lbl_canvas_hint.setMinimumWidth(200)
         self.lbl_canvas_mode = mk_lbl("Mode: Select", "sub")
         self.lbl_canvas_mode.setStyleSheet(f"color:{C4};font-weight:bold;")
+        self.lbl_canvas_mode.setMinimumWidth(180)
+        canvas_top.addWidget(self.lbl_canvas_hint, stretch=1)
+        canvas_top.addWidget(self.lbl_canvas_mode)
+        rv.addLayout(canvas_top)
+
+        canvas_controls = QHBoxLayout()
+        canvas_controls.setSpacing(12)
+
+        # View toggle checkboxes
         self.chk_show_ids = QCheckBox("Node IDs")
         self.chk_show_ids.setChecked(True)
         self.chk_show_elem_ids = QCheckBox("Elem IDs")
@@ -1456,17 +1608,69 @@ class GeometryTab(QWidget):
         self.chk_show_bcs.setChecked(True)
         self.chk_show_loads = QCheckBox("Loads")
         self.chk_show_loads.setChecked(True)
-        mode_row.setSpacing(14)
-        mode_row.addWidget(self.lbl_canvas_hint, stretch=1)
-        mode_row.addWidget(self.lbl_canvas_mode)
-        mode_row.addWidget(self.chk_show_ids)
-        mode_row.addWidget(self.chk_show_elem_ids)
-        mode_row.addWidget(self.chk_show_crack_links)
-        mode_row.addWidget(self.chk_show_bcs)
-        mode_row.addWidget(self.chk_show_loads)
-        rv.addLayout(mode_row)
+
+        for chk in [self.chk_show_ids, self.chk_show_elem_ids,
+                    self.chk_show_crack_links, self.chk_show_bcs, self.chk_show_loads]:
+            canvas_controls.addWidget(chk)
+
+        canvas_controls.addStretch()
+        rv.addLayout(canvas_controls)
+
         self.canvas = PanelMeshCanvas()
         rv.addWidget(self.canvas, stretch=1)
+
+        # Floating zoom overlay on the canvas (bottom-left corner)
+        self._zoom_overlay = QWidget(self.canvas)
+        self._zoom_overlay.setFixedSize(120, 36)
+        self._zoom_overlay.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+        self._zoom_overlay.setStyleSheet("background: transparent;")
+
+        zlay = QHBoxLayout(self._zoom_overlay)
+        zlay.setContentsMargins(4, 4, 4, 4)
+        zlay.setSpacing(3)
+
+        zoom_btn_style = (
+            f"QPushButton{{background:rgba(28,33,40,200);color:{TXT};"
+            f"border:1px solid {BORDER};border-radius:4px;"
+            f"font-weight:bold;font-size:14px;padding:2px;}}"
+            f"QPushButton:hover{{background:rgba(88,166,255,180);color:#0d1117;"
+            f"border-color:{C1};}}"
+        )
+
+        self.btn_zoom_out = QPushButton("−")
+        self.btn_zoom_out.setFixedSize(32, 28)
+        self.btn_zoom_out.setStyleSheet(zoom_btn_style)
+        self.btn_zoom_out.setToolTip("Zoom out")
+        self.btn_zoom_out.setCursor(Qt.PointingHandCursor)
+
+        self.btn_zoom_in = QPushButton("+")
+        self.btn_zoom_in.setFixedSize(32, 28)
+        self.btn_zoom_in.setStyleSheet(zoom_btn_style)
+        self.btn_zoom_in.setToolTip("Zoom in")
+        self.btn_zoom_in.setCursor(Qt.PointingHandCursor)
+
+        self.btn_zoom_reset = QPushButton("Fit")
+        self.btn_zoom_reset.setFixedSize(40, 28)
+        self.btn_zoom_reset.setStyleSheet(zoom_btn_style)
+        self.btn_zoom_reset.setToolTip("Reset to fit panel")
+        self.btn_zoom_reset.setCursor(Qt.PointingHandCursor)
+
+        zlay.addWidget(self.btn_zoom_out)
+        zlay.addWidget(self.btn_zoom_in)
+        zlay.addWidget(self.btn_zoom_reset)
+
+        self.lbl_zoom = QLabel("100%")
+        self.lbl_zoom.setStyleSheet(
+            f"color:{TXTS};font-size:9px;font-weight:bold;"
+            f"background:transparent;padding:0;")
+        self.lbl_zoom.setFixedWidth(36)
+        self.lbl_zoom.setAlignment(Qt.AlignCenter)
+        zlay.addWidget(self.lbl_zoom)
+
+        self.canvas.zoom_repositioned.connect(self._reposition_zoom_overlay)
+        self.canvas.zoom_changed.connect(
+            lambda z: self.lbl_zoom.setText(f"{int(z * 100)}%"))
+
         root.addWidget(right, stretch=1)
 
         # internal state
@@ -1531,14 +1735,24 @@ class GeometryTab(QWidget):
         self.btn_add_case.clicked.connect(self._add_load_case)
         self.btn_remove_case.clicked.connect(self._remove_load_case)
         self.cmb_lc_ts_type.currentTextChanged.connect(self._on_lc_ts_changed)
+        self.cmb_lc_ts_type.currentTextChanged.connect(self._update_lc_behavior_label)
         self.txt_lc_name.editingFinished.connect(self._rename_load_case)
+        self.txt_lc_name.textChanged.connect(lambda _: self._update_lc_behavior_label())
         self.txt_lc_desc.editingFinished.connect(self._save_lc_meta)
         self.txt_lc_expected.editingFinished.connect(self._save_lc_meta)
         self.btn_add_path_row.clicked.connect(self._add_path_row)
+        self.btn_remove_path_row.clicked.connect(self._remove_last_path_row)
+        self.btn_preset_ramp.clicked.connect(self._preset_path_ramp)
+        self.btn_preset_cycle.clicked.connect(self._preset_path_cycle)
+        self.btn_preset_hold.clicked.connect(self._preset_path_ramp_hold)
         self._rebuild_load_case_combo()
+        self._update_lc_behavior_label()
         self.chk_show_ids.toggled.connect(self._toggle_ids)
         self.chk_show_elem_ids.toggled.connect(self._toggle_elem_ids)
         self.chk_show_crack_links.toggled.connect(self._toggle_crack_links)
+        self.btn_zoom_in.clicked.connect(lambda: self._zoom_step(1.25))
+        self.btn_zoom_out.clicked.connect(lambda: self._zoom_step(0.8))
+        self.btn_zoom_reset.clicked.connect(self.canvas._reset_view)
         self.chk_show_bcs.toggled.connect(lambda on: setattr(self.canvas, 'show_bcs', on) or self.canvas.update())
         self.chk_show_loads.toggled.connect(lambda on: setattr(self.canvas, 'show_loads', on) or self.canvas.update())
         for sb in [self.sb_W, self.sb_H]:
@@ -1556,6 +1770,7 @@ class GeometryTab(QWidget):
         self._sync_mesh_controls_from_divisions()
         self._on_mesh_mode_toggled()
         self._set_canvas_mode(PanelMeshCanvas.MODE_SELECT)
+        QTimer.singleShot(100, self._reposition_zoom_overlay)
 
     # ─ handlers for geometry and mesh control changes, crack spec updates, and background image management
     def _on_dim_change(self):
@@ -1715,7 +1930,9 @@ class GeometryTab(QWidget):
         self.btn_crack_mode.blockSignals(False)
         self.btn_box_select.blockSignals(False)
         self.lbl_canvas_mode.setText("Mode: ↖ Select (click a node)")
-        self.lbl_canvas_hint.setText("Select mode: click nodes to add to selection. Shift+click to remove.")
+        self.lbl_canvas_hint.setText(
+            "Select: click a node to assign BC / load   |   "
+            "Ctrl+wheel = zoom   |   Middle-drag = pan")
 
     def _add_crack_y(self, y):
         if not any(abs(y - yc) < 0.01 * self.sb_H.value() for yc in self._crack_ys):
@@ -1857,7 +2074,23 @@ class GeometryTab(QWidget):
             self.lbl_canvas_hint.setText("Box mode: drag a rectangle to select multiple nodes for bulk BC/load operations.")
         else:
             self.lbl_canvas_mode.setText("Mode: ↖ Select (click a node)")
-            self.lbl_canvas_hint.setText("Select mode: click a node to assign BC / load")
+            self.lbl_canvas_hint.setText(
+                "Select: click a node to assign BC / load   |   "
+                "Ctrl+wheel = zoom   |   Middle-drag = pan")
+
+    def _reposition_zoom_overlay(self):
+        """Pin zoom overlay to the bottom-left corner of the canvas."""
+        if hasattr(self, '_zoom_overlay'):
+            x = 12
+            y = self.canvas.height() - self._zoom_overlay.height() - 28
+            self._zoom_overlay.move(x, y)
+            self._zoom_overlay.raise_()
+
+    def _zoom_step(self, factor):
+        new_zoom = max(0.2, min(10.0, self.canvas._zoom * factor))
+        self.canvas._zoom = new_zoom
+        self.lbl_zoom.setText(f"{int(new_zoom * 100)}%")
+        self.canvas.update()
 
     def _on_box_selection_changed(self, nids):
         self._box_selected_nodes = [int(nid) for nid in nids]
@@ -2551,6 +2784,30 @@ class GeometryTab(QWidget):
             self.tbl_lc_path.insertRow(r)
             self.tbl_lc_path.setItem(r, 0, QTableWidgetItem(str(t)))
             self.tbl_lc_path.setItem(r, 1, QTableWidgetItem(str(f)))
+        self._update_lc_behavior_label()
+
+    def _update_lc_behavior_label(self):
+        """Show a plain-English description of what this load case does."""
+        ts = self.cmb_lc_ts_type.currentText()
+        n_loads = len(self._load_nodes)
+        case_name = self.txt_lc_name.text().strip() or self._current_load_case
+
+        if ts == "Constant":
+            text = (f"'{case_name}' loads are applied at full value immediately "
+                    f"and held constant throughout the entire analysis.\n"
+                    f"Currently: {n_loads} loaded node(s).")
+        elif ts == "Linear":
+            text = (f"'{case_name}' loads increase linearly from zero to their "
+                    f"full value as pseudo-time goes from 0 to 1.\n"
+                    f"Currently: {n_loads} loaded node(s).")
+        elif ts == "Path":
+            n_pts = self.tbl_lc_path.rowCount()
+            text = (f"'{case_name}' loads follow a custom time-factor curve.\n"
+                    f"Path has {n_pts} control point(s), {n_loads} loaded node(s).\n"
+                    f"Factor=1.0 means full load, 0.0 means zero load.")
+        else:
+            text = ""
+        self.lbl_lc_behavior.setText(text)
 
     def _save_lc_meta(self):
         """Write sub-form values back into current load case dict."""
@@ -2571,10 +2828,12 @@ class GeometryTab(QWidget):
                 pass
         case["path_time"] = path_time
         case["path_factors"] = path_factors
+        self._update_lc_behavior_label()
 
     def _on_lc_ts_changed(self, ts_type):
         self._save_lc_meta()
         self._grp_lc_path.setVisible(ts_type == "Path")
+        self._update_lc_behavior_label()
 
     def _on_load_case_changed(self, name):
         self._save_lc_meta()
@@ -2585,6 +2844,7 @@ class GeometryTab(QWidget):
         self.canvas.set_load_nodes(self._load_nodes)
         self._update_load_case_ui()
         self._update_load_table()
+        self._update_lc_behavior_label()
 
     def _rename_load_case(self):
         new_name = self.txt_lc_name.text().strip()
@@ -2644,6 +2904,42 @@ class GeometryTab(QWidget):
                 pass
         self.tbl_lc_path.setItem(r, 0, QTableWidgetItem(str(last_t + 1.0)))
         self.tbl_lc_path.setItem(r, 1, QTableWidgetItem("1.0"))
+        self._save_lc_meta()
+
+    def _preset_path_ramp(self):
+        """Fill path table with linear ramp: 0 to 1."""
+        self.tbl_lc_path.setRowCount(0)
+        for t, f in [(0.0, 0.0), (1.0, 1.0)]:
+            r = self.tbl_lc_path.rowCount()
+            self.tbl_lc_path.insertRow(r)
+            self.tbl_lc_path.setItem(r, 0, QTableWidgetItem(str(t)))
+            self.tbl_lc_path.setItem(r, 1, QTableWidgetItem(str(f)))
+        self._save_lc_meta()
+
+    def _preset_path_cycle(self):
+        """Fill path table with one full reversed cycle."""
+        self.tbl_lc_path.setRowCount(0)
+        for t, f in [(0.0, 0.0), (0.25, 1.0), (0.5, 0.0), (0.75, -1.0), (1.0, 0.0)]:
+            r = self.tbl_lc_path.rowCount()
+            self.tbl_lc_path.insertRow(r)
+            self.tbl_lc_path.setItem(r, 0, QTableWidgetItem(str(t)))
+            self.tbl_lc_path.setItem(r, 1, QTableWidgetItem(str(f)))
+        self._save_lc_meta()
+
+    def _preset_path_ramp_hold(self):
+        """Fill path table with ramp then hold at peak."""
+        self.tbl_lc_path.setRowCount(0)
+        for t, f in [(0.0, 0.0), (0.5, 1.0), (1.0, 1.0)]:
+            r = self.tbl_lc_path.rowCount()
+            self.tbl_lc_path.insertRow(r)
+            self.tbl_lc_path.setItem(r, 0, QTableWidgetItem(str(t)))
+            self.tbl_lc_path.setItem(r, 1, QTableWidgetItem(str(f)))
+        self._save_lc_meta()
+
+    def _remove_last_path_row(self):
+        if self.tbl_lc_path.rowCount() > 0:
+            self.tbl_lc_path.removeRow(self.tbl_lc_path.rowCount() - 1)
+            self._save_lc_meta()
 
     def _clear_mesh(self):
         ans = QMessageBox.question(self, "Clear Mesh",
@@ -2955,6 +3251,140 @@ class GeometryTab(QWidget):
     def get_mesh_data(self):
         return self._mesh_data
 
+
+class QuickGeoDialog(QDialog):
+    """
+    Floating popup dialog for editing key geometry values without leaving the
+    current tab. Exposes panel size (W, H), mesh density (nx, ny), crack Y
+    positions, and a BC preset. On Apply, writes values back into the
+    referenced GeometryTab, regenerates the mesh, and emits `applied`.
+    """
+
+    applied = pyqtSignal()
+
+    def __init__(self, geo_tab, parent=None):
+        super().__init__(parent)
+        self.geo = geo_tab
+        self.setWindowTitle("Quick Edit Geometry")
+        self.setModal(False)
+        self.setMinimumWidth(380)
+        self.setStyleSheet(_build_style(CURRENT_THEME))
+
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignRight)
+        form.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+
+        self.sb_W = QDoubleSpinBox()
+        self.sb_W.setRange(0.01, 1e4); self.sb_W.setDecimals(3); self.sb_W.setSingleStep(0.1)
+        self.sb_W.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self.sb_W.setToolTip("Panel width W (m)")
+
+        self.sb_H = QDoubleSpinBox()
+        self.sb_H.setRange(0.01, 1e4); self.sb_H.setDecimals(3); self.sb_H.setSingleStep(0.1)
+        self.sb_H.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self.sb_H.setToolTip("Panel height H (m)")
+
+        self.sb_nx = QSpinBox()
+        self.sb_nx.setRange(1, 200); self.sb_nx.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self.sb_nx.setToolTip("Mesh divisions in X")
+
+        self.sb_ny = QSpinBox()
+        self.sb_ny.setRange(1, 200); self.sb_ny.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self.sb_ny.setToolTip("Mesh divisions in Y")
+
+        self.txt_cracks = QLineEdit()
+        self.txt_cracks.setPlaceholderText("e.g. 0.5, 1.0, 1.5")
+        self.txt_cracks.setToolTip("Comma-separated crack Y positions (in metres)")
+
+        self.cmb_bc = QComboBox()
+        self.cmb_bc.addItems([
+            "Keep existing",
+            "Fix bottom edge (pinned)",
+            "Fix bottom corners only",
+            "Clear all BCs",
+        ])
+        self.cmb_bc.setToolTip(
+            "Optional BC preset applied after mesh regeneration.\n"
+            "Choose 'Keep existing' to preserve the current BC assignment.")
+
+        form.addRow("Panel width W (m):",  self.sb_W)
+        form.addRow("Panel height H (m):", self.sb_H)
+        form.addRow("Mesh divisions nx:",  self.sb_nx)
+        form.addRow("Mesh divisions ny:",  self.sb_ny)
+        form.addRow("Crack Y positions:",  self.txt_cracks)
+        form.addRow("BC preset:",          self.cmb_bc)
+
+        self.lbl_status = QLabel("Edit values and click Apply.")
+        self.lbl_status.setStyleSheet(f"color:{TXTS};")
+        self.lbl_status.setWordWrap(True)
+
+        self.btn_apply  = QPushButton("Apply")
+        self.btn_apply.setObjectName("success")
+        self.btn_apply.setDefault(True)
+        self.btn_cancel = QPushButton("Close")
+        self.btn_cancel.setObjectName("flat")
+
+        btns = QHBoxLayout()
+        btns.addStretch()
+        btns.addWidget(self.btn_apply)
+        btns.addWidget(self.btn_cancel)
+
+        root = QVBoxLayout(self)
+        root.addLayout(form)
+        root.addWidget(self.lbl_status)
+        root.addLayout(btns)
+
+        self.btn_apply.clicked.connect(self._on_apply)
+        self.btn_cancel.clicked.connect(self.close)
+
+    def _apply_bc_preset(self, preset):
+        if preset == "Keep existing":
+            return
+        if preset == "Clear all BCs":
+            self.geo._bc_nodes = {}
+            self.geo.canvas.set_bc_nodes(self.geo._bc_nodes)
+            return
+        md = self.geo.get_mesh_data()
+        if not md:
+            return
+        nodes = md.get("nodes", {})
+        if not nodes:
+            return
+        ymin = min(v[1] for v in nodes.values())
+        tol  = 1e-6 * max(self.geo.sb_H.value(), 1.0)
+        bottom = [nid for nid, (x, y) in nodes.items() if abs(y - ymin) <= tol]
+        if not bottom:
+            return
+        if preset == "Fix bottom edge (pinned)":
+            targets = bottom
+        else:  # "Fix bottom corners only"
+            xs = [nodes[nid][0] for nid in bottom]
+            xmin, xmax = min(xs), max(xs)
+            targets = [nid for nid in bottom
+                       if abs(nodes[nid][0] - xmin) <= tol
+                       or abs(nodes[nid][0] - xmax) <= tol]
+        self.geo._bc_nodes = {int(nid): [1, 1] for nid in targets}
+        self.geo.canvas.set_bc_nodes(self.geo._bc_nodes)
+
+    def _on_apply(self):
+        try:
+            self.geo.sb_W.setValue(float(self.sb_W.value()))
+            self.geo.sb_H.setValue(float(self.sb_H.value()))
+            self.geo.sb_nx.setValue(int(self.sb_nx.value()))
+            self.geo.sb_ny.setValue(int(self.sb_ny.value()))
+
+            self.geo.txt_crack_y.setText(self.txt_cracks.text())
+            self.geo._sync_crack_ys_from_text()
+
+            self.geo._generate()
+            self._apply_bc_preset(self.cmb_bc.currentText())
+
+            self.lbl_status.setText("Applied. Mesh regenerated.")
+            self.lbl_status.setStyleSheet(f"color:{C2};font-weight:bold;")
+            self.applied.emit()
+        except Exception as exc:
+            self.lbl_status.setText(f"Error: {exc}")
+            self.lbl_status.setStyleSheet(f"color:{C3};font-weight:bold;")
 
 
 # crack materials tab — per-interface material assignment
@@ -4404,20 +4834,31 @@ QComboBox QAbstractItemView {{
             ts = ts_item.text() if ts_item else "Constant"
             chk = self.tbl_lc_activation.cellWidget(r, 2)
             active = chk.isChecked() if chk else True
-            st = self.tbl_lc_activation.item(r, 3)
-            et = self.tbl_lc_activation.item(r, 4)
             sc = self.tbl_lc_activation.item(r, 5)
-            start_t = float(st.text() if st and st.text() else "0")
-            end_t   = float(et.text() if et and et.text() else "0")
-            scale   = sc.text() if sc else "1.0"
-            if active:
-                timing = ("always active" if start_t == 0 and end_t == 0
-                          else f"active t={start_t}\u2013{end_t}")
-                lines.append(f"Load case \u2018{name}\u2019: {ts} series, {timing}, scale={scale}")
+            scale = sc.text() if sc else "1.0"
+
+            if not active:
+                lines.append(f"  ✕  '{name}': INACTIVE (will not be applied)")
+                continue
+
+            if ts == "Constant":
+                lines.append(
+                    f"  ✓  '{name}': Constant — applied immediately, held throughout (scale={scale})")
+            elif ts == "Linear":
+                lines.append(
+                    f"  ✓  '{name}': Linear — increases from 0 to full value with pseudo-time (scale={scale})")
+            elif ts == "Path":
+                lines.append(
+                    f"  ✓  '{name}': Path — follows user-defined time vs factor curve (scale={scale})")
             else:
-                lines.append(f"Load case \u2018{name}\u2019: INACTIVE")
-        self.lbl_lca_summary.setText(
-            "\n".join(lines) if lines else "No load cases defined.")
+                lines.append(
+                    f"  ✓  '{name}': {ts} series, scale={scale}")
+
+        if lines:
+            header = "Load case execution order:\n"
+            self.lbl_lca_summary.setText(header + "\n".join(lines))
+        else:
+            self.lbl_lca_summary.setText("No load cases defined.")
 
     def _lca_activation_params(self):
         out = {}
@@ -4992,7 +5433,7 @@ class ResultsTab(QWidget):
         for _, n1, n2, n3 in self._mesh_tris:
             xs = [nodes[n][0] for n in (n1, n2, n3, n1)]
             ys = [nodes[n][1] for n in (n1, n2, n3, n1)]
-            self.ax.plot(xs, ys, color="#30363d", lw=0.4, zorder=1)
+            self.ax.plot(xs, ys, color=BORDER, lw=0.4, zorder=1)
         # Deformed (bright)
         for _, n1, n2, n3 in self._mesh_tris:
             xs = [nodes[n][0] + scale * _safe_nd(n)[0] for n in (n1, n2, n3, n1)]
@@ -6440,22 +6881,32 @@ class MainWindow(QMainWindow):
         vl   = QVBoxLayout(root); vl.setContentsMargins(0, 0, 0, 0); vl.setSpacing(0)
 
         #  header
-        hdr = QWidget()
-        hdr.setStyleSheet(f"background:{BG_PANEL};border-bottom:1px solid {BORDER};")
-        hl  = QHBoxLayout(hdr); hl.setContentsMargins(20, 10, 20, 10)
-        t1  = QLabel("2D RC PANEL ANALYSIS")
-        t1.setStyleSheet(f"color:{C1};font-size:16px;font-weight:bold;letter-spacing:2px;")
-        t2  = QLabel("  Plane Stress  ·  tri31  ·  zeroLength Cracks  ·  OpenSeesPy")
-        t2.setStyleSheet(f"color:{TXTS};font-size:12px;")
+        self.hdr = QWidget()
+        self.hdr.setObjectName("header_bar")
+        self.hdr.setStyleSheet(f"background:{BG_PANEL};border-bottom:1px solid {BORDER};")
+        hl  = QHBoxLayout(self.hdr); hl.setContentsMargins(20, 10, 20, 10)
+        self.lbl_title = QLabel("2D RC PANEL ANALYSIS")
+        self.lbl_title.setStyleSheet(f"color:{C1};font-size:16px;font-weight:bold;letter-spacing:2px;")
+        self.lbl_subtitle = QLabel("  Plane Stress  ·  tri31  ·  zeroLength Cracks  ·  OpenSeesPy")
+        self.lbl_subtitle.setStyleSheet(f"color:{TXTS};font-size:12px;")
+        self.btn_theme = QPushButton("☀ Light" if CURRENT_THEME == "dark" else "🌙 Dark")
+        self.btn_theme.setFixedSize(100, 32)
+        self.btn_theme.setCursor(Qt.PointingHandCursor)
+        self.btn_theme.setToolTip("Toggle between dark and light mode")
+        self._update_theme_button_style()
         self.lbl_wsl = QLabel("Backend: checking…")
         self.lbl_wsl.setStyleSheet(f"color:{C4};font-size:12px;font-weight:bold;")
-        hl.addWidget(t1); hl.addWidget(t2); hl.addStretch(); hl.addWidget(self.lbl_wsl)
-        vl.addWidget(hdr)
+        hl.addWidget(self.lbl_title)
+        hl.addWidget(self.lbl_subtitle)
+        hl.addStretch()
+        hl.addWidget(self.btn_theme)
+        hl.addWidget(self.lbl_wsl)
+        vl.addWidget(self.hdr)
 
         #  quick-actions toolbar
-        qa = QWidget()
-        qa.setStyleSheet(f"background:{BG_CARD};border-bottom:1px solid {BORDER};")
-        qal = QHBoxLayout(qa); qal.setContentsMargins(16, 7, 16, 7); qal.setSpacing(8)
+        self.qa = QWidget()
+        self.qa.setStyleSheet(f"background:{BG_CARD};border-bottom:1px solid {BORDER};")
+        qal = QHBoxLayout(self.qa); qal.setContentsMargins(16, 7, 16, 7); qal.setSpacing(8)
 
         self.btn_run = QPushButton("▶  Run Analysis")
         self.btn_run.setMinimumHeight(36)
@@ -6464,45 +6915,69 @@ class MainWindow(QMainWindow):
             f"padding:7px 22px;border-radius:5px;border:none;")
         self.btn_run.setToolTip("Run the 2D panel analysis in WSL OpenSeesPy.")
 
-        self.btn_refresh_cracks = QPushButton("↺  Refresh Crack Materials")
-        self.btn_refresh_cracks.setObjectName("warn")
+        self.btn_refresh_cracks = QPushButton("↺ Refresh Cracks")
+        self.btn_refresh_cracks.setObjectName("flat")
+        self.btn_refresh_cracks.setStyleSheet(
+            f"QPushButton{{background:{BG_CARD};color:{C4};border:1px solid {C4};"
+            f"border-radius:5px;padding:8px 16px;font-weight:bold;font-size:12px;min-height:34px;}}"
+            f"QPushButton:hover{{background:{C4};color:{BG_DEEP};}}")
+        self.btn_refresh_cracks.setMinimumWidth(130)
         self.btn_refresh_cracks.setToolTip(
             "Load current crack lines from Geometry tab into the Crack Materials tab.")
 
-        self.btn_gen_script = QPushButton("📋  Export Script")
+        self.btn_gen_script = QPushButton("📋 Export Script")
         self.btn_gen_script.setObjectName("flat")
+        self.btn_gen_script.setMinimumWidth(120)
 
-        self.btn_save_png = QPushButton("💾  Save PNG")
-        self.btn_save_png.setObjectName("flat"); self.btn_save_png.setEnabled(False)
+        self.btn_save_png = QPushButton("💾 Save PNG")
+        self.btn_save_png.setObjectName("flat")
+        self.btn_save_png.setEnabled(False)
+        self.btn_save_png.setMinimumWidth(100)
 
-        self.btn_csv = QPushButton("📊  Export CSV")
-        self.btn_csv.setObjectName("flat"); self.btn_csv.setEnabled(False)
+        self.btn_csv = QPushButton("📊 Export CSV")
+        self.btn_csv.setObjectName("flat")
+        self.btn_csv.setEnabled(False)
+        self.btn_csv.setMinimumWidth(105)
 
         self.btn_gen_script_now = QPushButton("📋 Generate Script")
         self.btn_gen_script_now.setObjectName("flat")
+        self.btn_gen_script_now.setMinimumWidth(130)
         self.btn_gen_script_now.setToolTip(
             "Export a standalone OpenSeesPy script now (no need to run analysis first).")
 
         self.btn_example = QPushButton("📂 Calvi Panel")
         self.btn_example.setObjectName("flat")
+        self.btn_example.setMinimumWidth(110)
         self.btn_example.setToolTip(
             "Load the Calvi 2015 cracked panel example: single horizontal crack, "
             "unbonded reinforcement, 1.0x2.0 m panel.")
 
-        self.lbl_workflow = QLabel(
-            "  ① Geometry  →  ② Crack Materials  →  ③ Analysis  →  ▶ Run Analysis  →  ⑤ Results")
-        self.lbl_workflow.setStyleSheet(f"color:{TXTS};font-size:10px;")
+        self.btn_quick_geo = QPushButton("⚙ Quick Geometry")
+        self.btn_quick_geo.setObjectName("flat")
+        self.btn_quick_geo.setMinimumWidth(130)
+        self.btn_quick_geo.setToolTip(
+            "Open a floating popup to change panel size, mesh density, or crack positions\n"
+            "without leaving the current tab.")
 
         for w in [self.btn_run, self.btn_refresh_cracks, self.btn_gen_script,
-                  self.btn_gen_script_now, self.btn_example,
-                  self.btn_save_png, self.btn_csv, self.lbl_workflow]:
+                  self.btn_gen_script_now, self.btn_example, self.btn_quick_geo,
+                  self.btn_save_png, self.btn_csv]:
             qal.addWidget(w)
         qal.addStretch()
-        vl.addWidget(qa)
+        vl.addWidget(self.qa)
+
+        workflow_row = QHBoxLayout()
+        workflow_row.setContentsMargins(16, 2, 16, 2)
+        self.lbl_workflow = QLabel(
+            "  ① Geometry  →  ② Crack Materials  →  ③ Analysis  →  ▶ Run  →  ⑤ Results")
+        self.lbl_workflow.setStyleSheet(f"color:{TXTS};font-size:10px;")
+        workflow_row.addWidget(self.lbl_workflow)
+        workflow_row.addStretch()
+        vl.addLayout(workflow_row)
 
         # tabs
-        body = QWidget(); body.setStyleSheet(f"background:{BG_DEEP};")
-        bl   = QVBoxLayout(body); bl.setContentsMargins(12, 12, 12, 12)
+        self.body = QWidget(); self.body.setStyleSheet(f"background:{BG_DEEP};")
+        bl   = QVBoxLayout(self.body); bl.setContentsMargins(12, 12, 12, 12)
         self.tabs = QTabWidget()
 
         self.geo  = GeometryTab()
@@ -6513,6 +6988,14 @@ class MainWindow(QMainWindow):
         self.res  = ResultsTab()
         self.scr  = ScriptTab()
         self._load_backend_config()
+        QApplication.instance().setStyleSheet(_build_style(CURRENT_THEME))
+        self.btn_theme.setText("☀ Light" if CURRENT_THEME == "dark" else "🌙 Dark")
+        self._update_theme_button_style()
+        self.hdr.setStyleSheet(f"background:{BG_PANEL};border-bottom:1px solid {BORDER};")
+        self.lbl_title.setStyleSheet(f"color:{C1};font-size:16px;font-weight:bold;letter-spacing:2px;")
+        self.lbl_subtitle.setStyleSheet(f"color:{TXTS};font-size:12px;")
+        self.qa.setStyleSheet(f"background:{BG_CARD};border-bottom:1px solid {BORDER};")
+        self.body.setStyleSheet(f"background:{BG_DEEP};")
 
         for name, tab in [
             ("① Geometry",        self.geo),
@@ -6524,7 +7007,7 @@ class MainWindow(QMainWindow):
         ]:
             self.tabs.addTab(tab, name)
 
-        bl.addWidget(self.tabs); vl.addWidget(body, stretch=1)
+        bl.addWidget(self.tabs); vl.addWidget(self.body, stretch=1)
 
         self.statusBar().showMessage(
             "Ready — set panel geometry, assign BCs/loads, then Run Analysis.")
@@ -6542,6 +7025,10 @@ class MainWindow(QMainWindow):
         self.btn_csv.clicked.connect(lambda: self.res._csv())
         self.btn_gen_script_now.clicked.connect(self._generate_script_now)
         self.btn_example.clicked.connect(self._load_calvi_example)
+        self.btn_quick_geo.clicked.connect(self._open_quick_geo)
+        self.btn_theme.clicked.connect(self._toggle_theme)
+
+        self._quick_geo_dlg = None
 
         self._setup_menu()
         self._install_spinbox_wheel_guard()
@@ -6558,6 +7045,99 @@ class MainWindow(QMainWindow):
     def _refresh_cracks(self):
         self.crk.refresh_from_geometry(self.geo)
         self.tabs.setCurrentWidget(self.crk)
+
+    def _update_theme_button_style(self):
+        self.btn_theme.setStyleSheet(
+            f"QPushButton{{background:{BG_CARD};color:{TXT};border:1px solid {BORDER};"
+            f"border-radius:14px;font-size:11px;font-weight:bold;padding:4px 12px;}}"
+            f"QPushButton:hover{{background:{BG_PANEL};border-color:{C1};}}")
+
+    def _toggle_theme(self):
+        new_theme = "light" if CURRENT_THEME == "dark" else "dark"
+        _apply_theme(new_theme)
+        new_style = _build_style(new_theme)
+        QApplication.instance().setStyleSheet(new_style)
+
+        if new_theme == "dark":
+            self.btn_theme.setText("☀ Light")
+        else:
+            self.btn_theme.setText("🌙 Dark")
+        self._update_theme_button_style()
+
+        # Update header bar
+        for child in self.centralWidget().children():
+            if isinstance(child, QWidget) and child.objectName() == "header_bar":
+                child.setStyleSheet(f"background:{BG_PANEL};border-bottom:1px solid {BORDER};")
+                break
+
+        self.lbl_title.setStyleSheet(
+            f"color:{C1};font-size:16px;font-weight:bold;letter-spacing:2px;")
+        self.lbl_subtitle.setStyleSheet(f"color:{TXTS};font-size:12px;")
+        self.qa.setStyleSheet(f"background:{BG_CARD};border-bottom:1px solid {BORDER};")
+        self.body.setStyleSheet(f"background:{BG_DEEP};")
+        self.statusBar().setStyleSheet(
+            f"background:{BG_PANEL};color:{TXTS};border-top:1px solid {BORDER};")
+
+        # Update WSL label
+        self.lbl_wsl.setStyleSheet(
+            f"color:{C2 if 'OK' in self.lbl_wsl.text() else C3};"
+            f"font-size:12px;font-weight:bold;")
+
+        # Refresh matplotlib
+        for fig_owner in [self.res, self.crk]:
+            if hasattr(fig_owner, 'fig'):
+                fig_owner.fig.set_facecolor(BG_DEEP)
+            if hasattr(fig_owner, 'ax'):
+                fig_owner.ax.set_facecolor(BG_PANEL)
+                for s in fig_owner.ax.spines.values():
+                    s.set_edgecolor(BORDER)
+                fig_owner.ax.tick_params(colors=TXTS, labelsize=9)
+            if hasattr(fig_owner, 'canv'):
+                fig_owner.canv.draw_idle()
+            if hasattr(fig_owner, 'preview_canvas'):
+                fig_owner.preview_canvas.draw_idle()
+
+        if self._quick_geo_dlg is not None:
+            self._quick_geo_dlg.setStyleSheet(new_style)
+
+        # Restyle canvas header checkboxes for current theme
+        chk_style = (
+            f"QCheckBox{{color:{TXT};spacing:6px;font-size:12px;}}"
+            f"QCheckBox::indicator{{width:14px;height:14px;"
+            f"border:1px solid {BORDER};border-radius:3px;background:{BG_INPUT};}}"
+            f"QCheckBox::indicator:checked{{background:{C1};border-color:{C1};}}"
+        )
+        for chk in [self.geo.chk_show_ids, self.geo.chk_show_elem_ids,
+                    self.geo.chk_show_crack_links, self.geo.chk_show_bcs,
+                    self.geo.chk_show_loads]:
+            chk.setStyleSheet(chk_style)
+
+        # Restyle zoom overlay buttons
+        zoom_btn_style = (
+            f"QPushButton{{background:{BG_CARD};color:{TXT};"
+            f"border:1px solid {BORDER};border-radius:4px;"
+            f"font-weight:bold;font-size:14px;padding:2px;}}"
+            f"QPushButton:hover{{background:{C1};color:{BG_DEEP};border-color:{C1};}}"
+        )
+        for btn in [self.geo.btn_zoom_in, self.geo.btn_zoom_out, self.geo.btn_zoom_reset]:
+            btn.setStyleSheet(zoom_btn_style)
+
+        # Restyle zoom percentage label
+        if hasattr(self.geo, 'lbl_zoom'):
+            self.geo.lbl_zoom.setStyleSheet(
+                f"color:{TXTS};font-size:9px;font-weight:bold;background:transparent;")
+
+        # Restyle canvas hint and mode labels
+        self.geo.lbl_canvas_hint.setStyleSheet(f"color:{TXTS};font-size:12px;")
+        self.geo.lbl_canvas_mode.setStyleSheet(f"color:{C4};font-weight:bold;")
+
+        # Restyle the workflow label
+        self.lbl_workflow.setStyleSheet(f"color:{TXTS};font-size:10px;")
+
+        # Force canvas repaint with new colors
+        self.geo.canvas.update()
+
+        self._save_backend_config()
 
     def _params(self):
         p = {}
@@ -6823,6 +7403,9 @@ class MainWindow(QMainWindow):
             if APP_CONFIG_FILE.exists():
                 loaded = json.loads(APP_CONFIG_FILE.read_text(encoding="utf-8"))
                 cfg.update(loaded)
+                saved_theme = cfg.get("theme", "dark")
+                if saved_theme in THEMES:
+                    _apply_theme(saved_theme)
                 self._recent_files = [str(Path(p)) for p in loaded.get("recent_files", []) if p]
         except Exception:
             pass
@@ -6833,6 +7416,7 @@ class MainWindow(QMainWindow):
     def _save_backend_config(self):
         try:
             cfg = self.run.get_backend_config()
+            cfg["theme"] = CURRENT_THEME
             cfg["recent_files"] = list(self._recent_files[:5])
             APP_CONFIG_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
         except Exception as exc:
@@ -7109,6 +7693,28 @@ class MainWindow(QMainWindow):
         else:
             event.ignore()
 
+    def _open_quick_geo(self):
+        """Show the floating Quick Edit Geometry popup, seeded from current state."""
+        if self._quick_geo_dlg is None:
+            self._quick_geo_dlg = QuickGeoDialog(self.geo, self)
+            self._quick_geo_dlg.applied.connect(self._on_quick_geo_applied)
+        self._quick_geo_dlg.sb_W.setValue(self.geo.sb_W.value())
+        self._quick_geo_dlg.sb_H.setValue(self.geo.sb_H.value())
+        self._quick_geo_dlg.sb_nx.setValue(self.geo.sb_nx.value())
+        self._quick_geo_dlg.sb_ny.setValue(self.geo.sb_ny.value())
+        self._quick_geo_dlg.txt_cracks.setText(
+            ", ".join(f"{y:.3f}" for y in self.geo._crack_ys))
+        self._quick_geo_dlg.cmb_bc.setCurrentIndex(0)
+        self._quick_geo_dlg.show()
+        self._quick_geo_dlg.raise_()
+        self._quick_geo_dlg.activateWindow()
+
+    def _on_quick_geo_applied(self):
+        """Refresh crack materials and analysis tabs after a quick edit."""
+        self.crk.refresh_from_geometry(self.geo)
+        self.anl.refresh_load_cases(self.geo.get_params().get("load_cases", {}))
+        self.statusBar().showMessage("Geometry updated from quick-edit popup.")
+
     def _generate_script_now(self):
         """Generate script from current GUI state without running analysis."""
         errs = self.geo.validate()
@@ -7243,7 +7849,7 @@ def main():
     try:
         app = QApplication(sys.argv)
         app.setStyle("Fusion")
-        app.setStyleSheet(STYLE)
+        app.setStyleSheet(_build_style(CURRENT_THEME))
         w = MainWindow()
         w.show()
         sys.exit(app.exec_())
