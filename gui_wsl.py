@@ -607,6 +607,8 @@ class PanelMeshCanvas(QWidget):
             self.setCursor(Qt.CrossCursor)
         elif mode == self.MODE_CRACK:
             self.setCursor(Qt.UpArrowCursor)
+        elif mode == self.MODE_BOX:
+            self.setCursor(Qt.CrossCursor)
         else:
             self.setCursor(Qt.ArrowCursor)
         self.update()
@@ -701,14 +703,19 @@ class PanelMeshCanvas(QWidget):
                     self._multi_selected.discard(nid)
                 else:
                     self._multi_selected.add(nid)
-                self.selected_node = nid
-                self.node_clicked.emit(nid)
+                if nid == self.selected_node:
+                    # clicking the already-selected node deselects it
+                    self.selected_node = None
+                    self.node_clicked.emit(-1)
+                else:
+                    self.selected_node = nid
+                    self.node_clicked.emit(nid)
                 self.update()
             else:
-                # Click empty space clears the multi-selection
-                if hasattr(self, '_multi_selected'):
-                    self._multi_selected = set()
+                # clicking empty space only clears the single-node highlight,
+                # NOT the multi-selection — user may have misclicked
                 self.selected_node = None
+                self.node_clicked.emit(-1)
                 self.update()
         elif self.mode == self.MODE_CRACK:
             _, my = self._to_model(px, py)
@@ -796,6 +803,8 @@ class PanelMeshCanvas(QWidget):
                         if x0 <= self._to_px(nx_, ny_)[0] <= x1
                         and y0 <= self._to_px(nx_, ny_)[1] <= y1]
             self._box_selected = set(selected)
+            for nid in selected:
+                self.node_clicked.emit(nid)
             self.box_selection_changed.emit(selected)
             self._box_start = None; self._box_end = None; self.update()
         if (self.mode == self.MODE_DRAW and event.button() == Qt.LeftButton
@@ -1009,7 +1018,7 @@ class PanelMeshCanvas(QWidget):
 
         if self.mode == self.MODE_BOX and self._box_start and self._box_end:
             p.setPen(QPen(QColor(C1), 1, Qt.DashLine))
-            p.setBrush(QBrush(QColor(C1 + "33")))
+            p.setBrush(Qt.NoBrush)
             rx = min(self._box_start[0], self._box_end[0])
             ry = min(self._box_start[1], self._box_end[1])
             rw = abs(self._box_end[0] - self._box_start[0])
@@ -1230,14 +1239,66 @@ class GeometryTab(QWidget):
         vim.addWidget(self.lbl_import_status)
         lv.addWidget(grp_import)
 
-        # Concrete elastic properties
-        grp_conc = QGroupBox("Concrete (Plane Stress)")
-        fc_ = QFormLayout(grp_conc); fc_.setSpacing(6)
+        # Concrete elastic properties (widgets created here; group box lives in Materials tab)
         self.sb_Ec = dsb(30000., 100., 1e7, 0, 500., tip="Elastic modulus Ec (MPa)")
         self.sb_nu = dsb(0.20,   0.0,  0.49, 2, 0.01, tip="Poisson ratio ν")
-        fc_.addRow("Ec (MPa):", self.sb_Ec)
-        fc_.addRow("ν:",        self.sb_nu)
-        lv.addWidget(grp_conc)
+
+        # Reinforcement
+        grp_rb = QGroupBox("Reinforcement")
+        vr = QVBoxLayout(grp_rb); vr.setSpacing(6)
+        vr.addWidget(mk_lbl(
+            "Define rebar geometry before meshing. Assign material properties\n"
+            "in the Materials tab.", "sub"))
+        rb_row = QHBoxLayout()
+        rb_row.addWidget(mk_lbl("x1:"))
+        self.sb_rb_x1 = dsb(0.0, 0., 1e4, 3, 0.05)
+        rb_row.addWidget(self.sb_rb_x1)
+        rb_row.addWidget(mk_lbl("y1:"))
+        self.sb_rb_y1 = dsb(0.0, 0., 1e4, 3, 0.05)
+        rb_row.addWidget(self.sb_rb_y1)
+        rb_row.addWidget(mk_lbl("x2:"))
+        self.sb_rb_x2 = dsb(1.0, 0., 1e4, 3, 0.05)
+        rb_row.addWidget(self.sb_rb_x2)
+        rb_row.addWidget(mk_lbl("y2:"))
+        self.sb_rb_y2 = dsb(0.0, 0., 1e4, 3, 0.05)
+        rb_row.addWidget(self.sb_rb_y2)
+        rb_row.addStretch()
+        vr.addLayout(rb_row)
+
+        rb_prop = QHBoxLayout()
+        rb_prop.addWidget(mk_lbl("L_unb (m):"))
+        self.sb_rb_lunb = dsb(0.1, 0., 100., 3, 0.01,
+            tip="Unbonded length (m) — reinforcement free to slip over this length")
+        rb_prop.addWidget(self.sb_rb_lunb)
+        rb_prop.addStretch()
+        vr.addLayout(rb_prop)
+
+        rb_btns = QHBoxLayout()
+        self.btn_rb_add = QPushButton("＋ Add Rebar")
+        self.btn_rb_add.setObjectName("flat")
+        self.btn_rb_add.setToolTip("Add this rebar to the list")
+        self.btn_rb_del = QPushButton("✖ Remove Selected")
+        self.btn_rb_del.setObjectName("danger")
+        self.btn_rb_del.setToolTip("Remove the selected rebar from the list")
+        self.btn_rb_clr = QPushButton("Clear All")
+        self.btn_rb_clr.setObjectName("flat")
+        rb_btns.addWidget(self.btn_rb_add)
+        rb_btns.addWidget(self.btn_rb_del)
+        rb_btns.addWidget(self.btn_rb_clr)
+        rb_btns.addStretch()
+        vr.addLayout(rb_btns)
+
+        self.tbl_rebars = QTableWidget(0, 5)
+        self.tbl_rebars.setHorizontalHeaderLabels(["x1 (m)", "y1 (m)", "x2 (m)", "y2 (m)", "L_unb (m)"])
+        self.tbl_rebars.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tbl_rebars.setMaximumHeight(90)
+        self.tbl_rebars.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tbl_rebars.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        vr.addWidget(self.tbl_rebars)
+
+        self.lbl_rb_status = mk_lbl("No rebars defined.", "sub")
+        vr.addWidget(self.lbl_rb_status)
+        lv.addWidget(grp_rb)
 
         # Crack lines
         grp_crack = QGroupBox("Crack Lines")
@@ -1252,13 +1313,8 @@ class GeometryTab(QWidget):
         self.btn_crack_mode.setObjectName("flat")
         self.btn_crack_mode.setCheckable(True)
         self.btn_crack_mode.setToolTip("Toggle crack placement mode: click canvas to add/remove crack Y")
-        self.btn_box_select = QPushButton("▭ Box Select")
-        self.btn_box_select.setObjectName("flat")
-        self.btn_box_select.setCheckable(True)
-        self.btn_box_select.setToolTip("Drag a box on the canvas to select multiple nodes")
         row_inp1.addWidget(self.txt_crack_y, stretch=1)
         row_inp1.addWidget(self.btn_crack_mode)
-        row_inp1.addWidget(self.btn_box_select)
         vc.addLayout(row_inp1)
         row_inp2 = QHBoxLayout()
         row_inp2.addWidget(mk_lbl("Crack angle (° from horizontal):"))
@@ -1343,9 +1399,12 @@ class GeometryTab(QWidget):
         node_bc_row_buttons = QHBoxLayout()
         self.chk_fix_x = QCheckBox("Fix X")
         self.chk_fix_y = QCheckBox("Fix Y")
-        self.btn_apply_bc = QPushButton("Apply BC")
+        self.btn_apply_bc = QPushButton("✔  Assign BC")
+        self.btn_apply_bc.setObjectName("success")
+        self.btn_apply_bc.setMinimumHeight(34)
+        self.btn_apply_bc.setToolTip("Assign the selected fixity to the highlighted node")
         self.btn_apply_bc.setEnabled(False)
-        self.btn_clear_node_bc = QPushButton("Clear Node BC")
+        self.btn_clear_node_bc = QPushButton("✖  Clear BC")
         self.btn_clear_node_bc.setObjectName("flat"); self.btn_clear_node_bc.setEnabled(False)
         node_bc_row_checks.addWidget(self.chk_fix_x)
         node_bc_row_checks.addWidget(self.chk_fix_y)
@@ -1469,51 +1528,6 @@ class GeometryTab(QWidget):
         self._grp_lc_path.setVisible(False)
 
         vld.addWidget(self._grp_lc_detail)
-
-        # Quick-assign
-        row_load_btns = QHBoxLayout()
-        self.btn_top_disp = QPushButton("Uniform Top Load")
-        self.btn_top_disp.setObjectName("flat")
-        self.btn_clr_loads = QPushButton("Clear Case Loads")
-        self.btn_clr_loads.setObjectName("danger")
-        row_load_btns.addWidget(self.btn_top_disp)
-        row_load_btns.addWidget(self.btn_clr_loads)
-        vld.addLayout(row_load_btns)
-
-        # Top load quick value
-        row_top_load = QHBoxLayout()
-        row_top_load.addWidget(mk_lbl("Total Fy (kN):"))
-        self.sb_top_fy = dsb(-1000., -1e8, 1e8, 1, 100., w=120, tip="Total Y force at top edge (kN), split equally across top nodes")
-        row_top_load.addWidget(self.sb_top_fy)
-        row_top_load.addStretch()
-        vld.addLayout(row_top_load)
-
-        # Per-node load assignment
-        load_row_inputs = QHBoxLayout()
-        load_row_buttons = QHBoxLayout()
-        load_row_inputs.addWidget(mk_lbl("Fx (kN):"))
-        self.sb_node_Fx = dsb(0., -1e9, 1e9, 3, 10., w=90)
-        load_row_inputs.addWidget(self.sb_node_Fx)
-        load_row_inputs.addWidget(mk_lbl("  Fy (kN):"))
-        self.sb_node_Fy = dsb(0., -1e9, 1e9, 3, 10., w=90)
-        load_row_inputs.addWidget(self.sb_node_Fy)
-        load_row_inputs.addStretch()
-        self.btn_apply_load = QPushButton("Apply Load")
-        self.btn_apply_load.setEnabled(False)
-        self.btn_clear_node_load = QPushButton("Clear")
-        self.btn_clear_node_load.setObjectName("flat")
-        self.btn_clear_node_load.setEnabled(False)
-        load_row_buttons.addWidget(self.btn_apply_load)
-        load_row_buttons.addWidget(self.btn_clear_node_load)
-        load_row_buttons.addStretch()
-        vld.addLayout(load_row_inputs)
-        vld.addLayout(load_row_buttons)
-
-        self.tbl_loads = QTableWidget(0, 3)
-        self.tbl_loads.setHorizontalHeaderLabels(["Node", "Fx (kN)", "Fy (kN)"])
-        self.tbl_loads.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.tbl_loads.setMaximumHeight(70)
-        vld.addWidget(self.tbl_loads)
         lv.addWidget(grp_load)
 
         # Reinforcement (Crossing Cracks)
@@ -1692,6 +1706,9 @@ class GeometryTab(QWidget):
         self._current_load_case = "Default"
         self._selected_node = None
         self._crack_ys      = []
+        self._rebars = []
+        # each entry: {'x1': float, 'y1': float, 'x2': float, 'y2': float,
+        #              'L_unb': float, 'Es': float, 'As': float}
         self._hand_strokes  = []   # mirror of canvas.hand_strokes
         self._hand_crack_ys = []   # y_mean derived from each hand stroke
         self._hand_crack_defs = []
@@ -1709,7 +1726,6 @@ class GeometryTab(QWidget):
         self.btn_upload_img.clicked.connect(self._upload_background_image)
         self.btn_clear_img.clicked.connect(self._clear_background_image)
         self.btn_crack_mode.toggled.connect(self._toggle_crack_mode)
-        self.btn_box_select.toggled.connect(self._toggle_box_mode)
         self.txt_crack_y.editingFinished.connect(self._sync_crack_ys_from_text)
         self.canvas.node_clicked.connect(self._on_node_clicked)
         self.canvas.node_double_clicked.connect(self._on_node_double_clicked)
@@ -1727,10 +1743,9 @@ class GeometryTab(QWidget):
         self.btn_clr_bc.clicked.connect(self._clear_all_bc)
         self.btn_apply_bc.clicked.connect(self._apply_bc_to_node)
         self.btn_clear_node_bc.clicked.connect(self._clear_node_bc)
-        self.btn_top_disp.clicked.connect(self._apply_top_load)
-        self.btn_clr_loads.clicked.connect(self._clear_all_loads)
-        self.btn_apply_load.clicked.connect(self._apply_load_to_node)
-        self.btn_clear_node_load.clicked.connect(self._clear_node_load)
+        self.btn_rb_add.clicked.connect(self._add_rebar)
+        self.btn_rb_del.clicked.connect(self._del_rebar)
+        self.btn_rb_clr.clicked.connect(self._clr_rebars)
         self.cmb_load_case.currentTextChanged.connect(self._on_load_case_changed)
         self.btn_add_case.clicked.connect(self._add_load_case)
         self.btn_remove_case.clicked.connect(self._remove_load_case)
@@ -1907,9 +1922,13 @@ class GeometryTab(QWidget):
         )
 
     def _toggle_crack_mode(self, on):
+        box_on = False
+        if hasattr(self, '_main_win') and self._main_win is not None:
+            self._main_win.btn_box_select.setChecked(False)
+            box_on = self._main_win.btn_box_select.isChecked()
         if on:
             self._set_canvas_mode(PanelMeshCanvas.MODE_CRACK)
-        elif not self.btn_hand_draw.isChecked() and not self.btn_box_select.isChecked():
+        elif not self.btn_hand_draw.isChecked() and not box_on:
             self._set_canvas_mode(PanelMeshCanvas.MODE_SELECT)
 
     def _toggle_box_mode(self, on):
@@ -1922,13 +1941,16 @@ class GeometryTab(QWidget):
         """Called when canvas auto-exits draw mode after a stroke."""
         self.btn_hand_draw.blockSignals(True)
         self.btn_crack_mode.blockSignals(True)
-        self.btn_box_select.blockSignals(True)
+        if hasattr(self, '_main_win') and self._main_win is not None:
+            self._main_win.btn_box_select.blockSignals(True)
         self.btn_hand_draw.setChecked(False)
         self.btn_crack_mode.setChecked(False)
-        self.btn_box_select.setChecked(False)
+        if hasattr(self, '_main_win') and self._main_win is not None:
+            self._main_win.btn_box_select.setChecked(False)
         self.btn_hand_draw.blockSignals(False)
         self.btn_crack_mode.blockSignals(False)
-        self.btn_box_select.blockSignals(False)
+        if hasattr(self, '_main_win') and self._main_win is not None:
+            self._main_win.btn_box_select.blockSignals(False)
         self.lbl_canvas_mode.setText("Mode: ↖ Select (click a node)")
         self.lbl_canvas_hint.setText(
             "Select: click a node to assign BC / load   |   "
@@ -2005,20 +2027,62 @@ class GeometryTab(QWidget):
                     break
         self.btn_add_rebar.setEnabled(self.cmb_rebar_crack_y.count() > 0)
 
+    def _add_rebar(self):
+        rb = {
+            'x1': self.sb_rb_x1.value(), 'y1': self.sb_rb_y1.value(),
+            'x2': self.sb_rb_x2.value(), 'y2': self.sb_rb_y2.value(),
+            'L_unb': self.sb_rb_lunb.value(),
+        }
+        self._rebars.append(rb)
+        self._refresh_rebar_table()
+        self._mark_mesh_stale()
+
+    def _del_rebar(self):
+        row = self.tbl_rebars.currentRow()
+        if row < 0 or row >= len(self._rebars):
+            return
+        self._rebars.pop(row)
+        self._refresh_rebar_table()
+        self._mark_mesh_stale()
+
+    def _clr_rebars(self):
+        self._rebars.clear()
+        self._refresh_rebar_table()
+        self._mark_mesh_stale()
+
     def _refresh_rebar_table(self):
-        self.tbl_rebar.setRowCount(len(self._rebar_definitions))
-        for r, rb in enumerate(self._rebar_definitions):
-            x_val = rb.get("x", None)
-            cells = [
-                f"{float(rb.get('crack_y', 0.0)):.4f}",
-                f"{float(rb.get('As', 0.0)):.3f}",
-                f"{float(rb.get('Es', 0.0)):.1f}",
-                f"{float(rb.get('fy', 0.0)):.1f}",
-                f"{float(rb.get('L_unb', 0.0)):.4f}",
-                "uniform" if x_val is None else f"{float(x_val):.4f}",
-            ]
-            for c, txt in enumerate(cells):
-                self.tbl_rebar.setItem(r, c, QTableWidgetItem(txt))
+        if hasattr(self, "tbl_rebars"):
+            self.tbl_rebars.setRowCount(0)
+            for rb in self._rebars:
+                r = self.tbl_rebars.rowCount()
+                self.tbl_rebars.insertRow(r)
+                self.tbl_rebars.setItem(r, 0, QTableWidgetItem(f"{rb['x1']:.3f}"))
+                self.tbl_rebars.setItem(r, 1, QTableWidgetItem(f"{rb['y1']:.3f}"))
+                self.tbl_rebars.setItem(r, 2, QTableWidgetItem(f"{rb['x2']:.3f}"))
+                self.tbl_rebars.setItem(r, 3, QTableWidgetItem(f"{rb['y2']:.3f}"))
+                self.tbl_rebars.setItem(r, 4, QTableWidgetItem(f"{rb['L_unb']:.3f}"))
+            n = len(self._rebars)
+            if hasattr(self, "lbl_rb_status"):
+                self.lbl_rb_status.setText(
+                    f"{n} rebar(s) defined." if n else "No rebars defined.")
+        if hasattr(self, "tbl_rebar"):
+            self.tbl_rebar.setRowCount(len(self._rebar_definitions))
+            for r, rb in enumerate(self._rebar_definitions):
+                x_val = rb.get("x", None)
+                cells = [
+                    f"{float(rb.get('crack_y', 0.0)):.4f}",
+                    f"{float(rb.get('As', 0.0)):.3f}",
+                    f"{float(rb.get('Es', 0.0)):.1f}",
+                    f"{float(rb.get('fy', 0.0)):.1f}",
+                    f"{float(rb.get('L_unb', 0.0)):.4f}",
+                    "uniform" if x_val is None else f"{float(x_val):.4f}",
+                ]
+                for c, txt in enumerate(cells):
+                    self.tbl_rebar.setItem(r, c, QTableWidgetItem(txt))
+
+    def _mark_mesh_stale(self):
+        self.lbl_mesh_info.setText(
+            "⚠ Rebar list changed — regenerate mesh before running.")
 
     def _add_rebar_definition(self):
         if self.cmb_rebar_crack_y.count() == 0:
@@ -2047,22 +2111,29 @@ class GeometryTab(QWidget):
 
     # hand-draw handlers
     def _toggle_hand_draw(self, on):
+        box_on = False
+        if hasattr(self, '_main_win') and self._main_win is not None:
+            self._main_win.btn_box_select.setChecked(False)
+            box_on = self._main_win.btn_box_select.isChecked()
         if on:
             self._set_canvas_mode(PanelMeshCanvas.MODE_DRAW)
-        elif not self.btn_crack_mode.isChecked() and not self.btn_box_select.isChecked():
+        elif not self.btn_crack_mode.isChecked() and not box_on:
             self._set_canvas_mode(PanelMeshCanvas.MODE_SELECT)
 
     def _set_canvas_mode(self, mode):
         self.canvas.set_mode(mode)
         self.btn_crack_mode.blockSignals(True)
         self.btn_hand_draw.blockSignals(True)
-        self.btn_box_select.blockSignals(True)
+        if hasattr(self, 'btn_box_select'):
+            self.btn_box_select.blockSignals(True)
         self.btn_crack_mode.setChecked(mode == PanelMeshCanvas.MODE_CRACK)
         self.btn_hand_draw.setChecked(mode == PanelMeshCanvas.MODE_DRAW)
-        self.btn_box_select.setChecked(mode == PanelMeshCanvas.MODE_BOX)
+        if hasattr(self, 'btn_box_select'):
+            self.btn_box_select.setChecked(mode == PanelMeshCanvas.MODE_BOX)
         self.btn_crack_mode.blockSignals(False)
         self.btn_hand_draw.blockSignals(False)
-        self.btn_box_select.blockSignals(False)
+        if hasattr(self, 'btn_box_select'):
+            self.btn_box_select.blockSignals(False)
         if mode == PanelMeshCanvas.MODE_DRAW:
             self.lbl_canvas_mode.setText("Mode: ✏ Draw (drag to sketch crack)")
             self.lbl_canvas_hint.setText("Draw mode: drag to trace a crack; click Draw Crack again to return to Select.")
@@ -2223,6 +2294,10 @@ class GeometryTab(QWidget):
         )
 
     def _generate(self):
+        if self._rebars:
+            # future: pass rebar endpoints as mesh constraints
+            # for now just log them so runner receives them
+            pass
         # Merge any Y values the user typed but hasn't committed yet
         """
         Build or refresh mesh-related data used by the geometry and analysis flow.
@@ -2549,6 +2624,14 @@ class GeometryTab(QWidget):
         """
         Handle a UI event and keep the related state in sync.
         """
+        if nid == -1:
+            self._selected_node = None
+            self.lbl_sel_node.setText("No node selected.")
+            self.btn_apply_bc.setEnabled(False)
+            self.btn_clear_node_bc.setEnabled(False)
+            self.btn_apply_load.setEnabled(False)
+            self.btn_clear_node_load.setEnabled(False)
+            return
         self._selected_node = nid
         if self._box_selected_nodes:
             self._box_selected_nodes = []
@@ -2559,10 +2642,8 @@ class GeometryTab(QWidget):
         self.lbl_sel_node.setText(f"Node #{nid}  (x={x:.4f}, y={y:.4f})")
         bc = self._node_map_get(self._bc_nodes, nid, (0, 0))
         self.chk_fix_x.setChecked(bool(bc[0])); self.chk_fix_y.setChecked(bool(bc[1]))
-        ld = self._node_map_get(self._load_nodes, nid, (0., 0.))
-        self.sb_node_Fx.setValue(ld[0]); self.sb_node_Fy.setValue(ld[1])
         self.btn_apply_bc.setEnabled(True); self.btn_clear_node_bc.setEnabled(True)
-        self.btn_apply_load.setEnabled(True); self.btn_clear_node_load.setEnabled(True)
+        self._notify_load_widgets(nid)
 
     def _on_node_double_clicked(self, nid):
         """Show a context menu on double-click with delete/clear options."""
@@ -2692,6 +2773,14 @@ class GeometryTab(QWidget):
                 self._node_map_pop(self._bc_nodes, nid)
         self.canvas.set_bc_nodes(self._bc_nodes)
         self._update_bc_table()
+        if self._selected_node is not None:
+            nid = self._selected_node
+            if fx or fy:
+                bc_str = ("Fix X+Y" if fx and fy else "Fix X" if fx else "Fix Y")
+                self.lbl_sel_node.setText(
+                    f"Node #{nid} — BC assigned: {bc_str}")
+            else:
+                self.lbl_sel_node.setText(f"Node #{nid} — BC cleared")
 
     def _clear_node_bc(self):
         if self._selected_node is None: return
@@ -2730,6 +2819,13 @@ class GeometryTab(QWidget):
                 self._node_map_pop(self._load_nodes, nid)
         self.canvas.set_load_nodes(self._load_nodes)
         self._update_load_table()
+        if self._selected_node is not None:
+            nid = self._selected_node
+            if abs(Fx) > 1e-12 or abs(Fy) > 1e-12:
+                self.lbl_sel_node.setText(
+                    f"Node #{nid} — Load assigned: Fx={Fx:.1f} kN, Fy={Fy:.1f} kN")
+            else:
+                self.lbl_sel_node.setText(f"Node #{nid} — Load cleared")
 
     def _clear_node_load(self):
         if self._selected_node is None: return
@@ -2737,20 +2833,33 @@ class GeometryTab(QWidget):
         self.sb_node_Fx.setValue(0.); self.sb_node_Fy.setValue(0.)
         self.canvas.set_load_nodes(self._load_nodes); self._update_load_table()
 
-    def _apply_top_load(self):
+    def _clear_node_load_ana(self, ana):
+        if self._selected_node is None: return
+        self._node_map_pop(self._load_nodes, self._selected_node)
+        ana.sb_node_Fx.setValue(0.); ana.sb_node_Fy.setValue(0.)
+        self.canvas.set_load_nodes(self._load_nodes)
+        self._update_load_table_ext(ana.tbl_loads)
+
+    def _apply_top_load_ana(self, ana):
         if self._mesh_data is None: return
         H = self._mesh_data["H"]
         top = [nid for nid, (_, y) in self._mesh_data["nodes"].items() if abs(y - H) < 1e-8]
         if not top:
             QMessageBox.warning(self, "No Top Nodes", "Generate mesh first."); return
-        total_Fy = self.sb_top_fy.value()
+        total_Fy = ana.sb_top_fy.value()
         fper = total_Fy / len(top)
         for nid in top: self._load_nodes[nid] = (0., fper)
-        self.canvas.set_load_nodes(self._load_nodes); self._update_load_table()
+        self.canvas.set_load_nodes(self._load_nodes)
+        self._update_load_table_ext(ana.tbl_loads)
 
     def _clear_all_loads(self):
         self._load_nodes.clear()
         self.canvas.set_load_nodes(self._load_nodes); self._update_load_table()
+
+    def _clear_all_loads_ana(self, ana):
+        self._load_nodes.clear()
+        self.canvas.set_load_nodes(self._load_nodes)
+        self._update_load_table_ext(ana.tbl_loads)
 
     # ------------------------------------------------------------------ #
     # Load case manager methods                                            #
@@ -2970,12 +3079,21 @@ class GeometryTab(QWidget):
             self.tbl_bc.setItem(i, 2, QTableWidgetItem("✓" if fy else ""))
 
     def _update_load_table(self):
+        if hasattr(self, "tbl_loads"):
+            self._update_load_table_ext(self.tbl_loads)
+        elif hasattr(self, "_load_table_ext") and self._load_table_ext is not None:
+            self._update_load_table_ext(self._load_table_ext)
+
+    def _update_load_table_ext(self, tbl):
         items = sorted((int(nid), vals) for nid, vals in self._load_nodes.items())
-        self.tbl_loads.setRowCount(len(items))
+        tbl.setRowCount(len(items))
         for i, (nid, (Fx, Fy)) in enumerate(items):
-            self.tbl_loads.setItem(i, 0, QTableWidgetItem(str(nid)))
-            self.tbl_loads.setItem(i, 1, QTableWidgetItem(f"{Fx:.3f}"))
-            self.tbl_loads.setItem(i, 2, QTableWidgetItem(f"{Fy:.3f}"))
+            tbl.setItem(i, 0, QTableWidgetItem(str(nid)))
+            tbl.setItem(i, 1, QTableWidgetItem(f"{Fx:.3f}"))
+            tbl.setItem(i, 2, QTableWidgetItem(f"{Fy:.3f}"))
+
+    def _notify_load_widgets(self, nid):
+        pass
 
     def _toggle_ids(self, on):
         self.canvas.show_ids = on; self.canvas.update()
@@ -3132,6 +3250,7 @@ class GeometryTab(QWidget):
             }
             for name, case in self._load_cases.items()
         }
+        p["rebars"] = list(self._rebars)
         p["hand_crack_strokes"] = [[[pt[0], pt[1]] for pt in s]
                                    for s in self._hand_strokes]
         p["hand_crack_ys"]      = list(self._hand_crack_ys)
@@ -3653,6 +3772,19 @@ class CrackMaterialTab(QWidget):
             "Calvi2015 (EPP-normal / Elastic-shear): bilinear normal+shear spring for Calvi 2015 validation"
         )
 
+        # Solid concrete material — used for tri31 elements on the panel body
+        grp_conc = QGroupBox("Solid Concrete Material (Plane Stress)")
+        grp_conc.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        fc_ = QFormLayout(grp_conc); fc_.setSpacing(6)
+        fc_.setContentsMargins(12, 10, 12, 10)
+        lbl_conc_sub = mk_lbl("Used for tri31 elements — applied to the panel body.", "sub")
+        fc_.addRow(lbl_conc_sub)
+        self.sb_Ec = dsb(30000., 100., 1e7, 0, 500., tip="Elastic modulus Ec (MPa)")
+        self.sb_nu = dsb(0.20,   0.0,  0.49, 2, 0.01, tip="Poisson ratio ν")
+        fc_.addRow("Ec (MPa):", self.sb_Ec)
+        fc_.addRow("ν:",        self.sb_nu)
+        outer.addWidget(grp_conc)
+
         # Global material assignment — single-click to set one material on every row
         grp_global = QGroupBox("Assign Global Material")
         grp_global.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -3915,6 +4047,24 @@ class CrackMaterialTab(QWidget):
         self.preview_canvas = FigureCanvas(self.preview_fig)
         hpv.addWidget(self.preview_canvas, stretch=1)
         outer.addWidget(grp_preview)
+        grp_rb_mat = QGroupBox("Reinforcement Material (1D Truss)")
+        frm = QFormLayout(grp_rb_mat); frm.setSpacing(8)
+        self.sb_rb_fy = dsb(500., 1., 1e6, 1, 10.,
+            tip="Steel yield strength fy (MPa)")
+        self.sb_rb_Es = dsb(200000., 1., 1e7, 0, 1000.,
+            tip="Young's modulus Es (MPa)")
+        self.sb_rb_As = dsb(100., 0.1, 1e6, 1, 10.,
+            tip="Cross-sectional area As (mm²) — translates stress-strain to "
+                "force-deformation in OpenSees")
+        frm.addRow("Yield strength fy (MPa):", self.sb_rb_fy)
+        frm.addRow("Young's modulus Es (MPa):", self.sb_rb_Es)
+        frm.addRow("Area As (mm²):", self.sb_rb_As)
+        note = mk_lbl(
+            "As is treated as a material parameter in OpenSees: it scales the\n"
+            "stress-strain law into the force-deformation response of the truss.", "sub")
+        note.setWordWrap(True)
+        frm.addRow("", note)
+        outer.addWidget(grp_rb_mat)
         outer.addStretch()
 
         scroll.setWidget(content)
@@ -4509,7 +4659,14 @@ class CrackMaterialTab(QWidget):
                 data.append(vals)
             except Exception:
                 pass
-        return {"crack_mat_data": data}
+        return {
+            "crack_mat_data": data,
+            "rebar_mat": {
+                "fy": self.sb_rb_fy.value(),
+                "Es": self.sb_rb_Es.value(),
+                "As": self.sb_rb_As.value(),
+            },
+        }
 
     def set_project_state(self, state, geo_tab=None):
         
@@ -4641,6 +4798,59 @@ QComboBox QAbstractItemView {{
         form.addRow("Max iterations:",      self.sb_iter)
         form.addRow("Load factor cap λ:",   self.sb_lam)
         outer.addWidget(grp_static)
+
+        grp_loads = QGroupBox("Applied Loads")
+        vloads = QVBoxLayout(grp_loads); vloads.setSpacing(6)
+        vloads.addWidget(mk_lbl(
+            "Select a node on the Geometry canvas, then enter\n"
+            "forces and click Assign Load.", "sub"))
+
+        row_load_btns = QHBoxLayout()
+        self.btn_top_disp = QPushButton("Uniform Top Load")
+        self.btn_top_disp.setObjectName("flat")
+        self.btn_clr_loads = QPushButton("Clear All Loads")
+        self.btn_clr_loads.setObjectName("danger")
+        row_load_btns.addWidget(self.btn_top_disp)
+        row_load_btns.addWidget(self.btn_clr_loads)
+        vloads.addLayout(row_load_btns)
+
+        row_top_load = QHBoxLayout()
+        row_top_load.addWidget(mk_lbl("Total Fy (kN):"))
+        self.sb_top_fy = dsb(-1000., -1e8, 1e8, 1, 100., w=120,
+            tip="Total Y force at top edge (kN), split equally across top nodes")
+        row_top_load.addWidget(self.sb_top_fy)
+        row_top_load.addStretch()
+        vloads.addLayout(row_top_load)
+
+        load_row_inputs = QHBoxLayout()
+        load_row_buttons = QHBoxLayout()
+        load_row_inputs.addWidget(mk_lbl("Fx (kN):"))
+        self.sb_node_Fx = dsb(0., -1e9, 1e9, 3, 10., w=90)
+        load_row_inputs.addWidget(self.sb_node_Fx)
+        load_row_inputs.addWidget(mk_lbl("  Fy (kN):"))
+        self.sb_node_Fy = dsb(0., -1e9, 1e9, 3, 10., w=90)
+        load_row_inputs.addWidget(self.sb_node_Fy)
+        load_row_inputs.addStretch()
+
+        self.btn_apply_load = QPushButton("✔  Assign Load")
+        self.btn_apply_load.setObjectName("success")
+        self.btn_apply_load.setEnabled(False)
+        self.btn_clear_node_load = QPushButton("✖  Clear Load")
+        self.btn_clear_node_load.setObjectName("flat")
+        self.btn_clear_node_load.setEnabled(False)
+        load_row_buttons.addWidget(self.btn_apply_load)
+        load_row_buttons.addWidget(self.btn_clear_node_load)
+        load_row_buttons.addStretch()
+        vloads.addLayout(load_row_inputs)
+        vloads.addLayout(load_row_buttons)
+
+        self.tbl_loads = QTableWidget(0, 3)
+        self.tbl_loads.setHorizontalHeaderLabels(["Node", "Fx (kN)", "Fy (kN)"])
+        self.tbl_loads.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tbl_loads.setMaximumHeight(70)
+        vloads.addWidget(self.tbl_loads)
+
+        outer.addWidget(grp_loads)
 
         grp_lca = QGroupBox("Load Case Activation")
         lca_vbox = QVBoxLayout(grp_lca); lca_vbox.setSpacing(6)
@@ -6896,10 +7106,23 @@ class MainWindow(QMainWindow):
         self._update_theme_button_style()
         self.lbl_wsl = QLabel("Backend: checking…")
         self.lbl_wsl.setStyleSheet(f"color:{C4};font-size:12px;font-weight:bold;")
+        self.btn_box_select = QPushButton("⬚  Box Select")
+        self.btn_box_select.setObjectName("flat")
+        self.btn_box_select.setCheckable(True)
+        self.btn_box_select.setMinimumHeight(28)
+        self.btn_box_select.setToolTip("Toggle box-selection mode: drag to select multiple nodes")
+        self.btn_box_select.setStyleSheet(
+            f"QPushButton{{background:{BG_CARD};color:{C1};"
+            f"border:1px solid {C1};border-radius:5px;"
+            f"padding:4px 12px;font-size:12px;font-weight:bold;min-height:28px;}}"
+            f"QPushButton:checked{{background:{C1};color:{BG_DEEP};}}"
+            f"QPushButton:hover{{background:{BG_PANEL};border-color:{C1};}}")
         hl.addWidget(self.lbl_title)
         hl.addWidget(self.lbl_subtitle)
         hl.addStretch()
         hl.addWidget(self.btn_theme)
+        hl.addWidget(self.btn_box_select)
+        hl.addSpacing(12)
         hl.addWidget(self.lbl_wsl)
         vl.addWidget(self.hdr)
 
@@ -6981,9 +7204,32 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
 
         self.geo  = GeometryTab()
+        self.geo._main_win = self
         self.crk  = CrackMaterialTab()
         self.crk.set_geo_ref(self.geo)
+        self.geo.sb_Ec = self.crk.sb_Ec
+        self.geo.sb_nu = self.crk.sb_nu
         self.anl  = AnalysisTab()
+        self.geo._load_table_ext = self.anl.tbl_loads
+        self.geo.btn_apply_load = self.anl.btn_apply_load
+        self.geo.btn_clear_node_load = self.anl.btn_clear_node_load
+        self.anl.btn_apply_load.clicked.connect(
+            lambda: self._assign_load_from_ana())
+        self.anl.btn_clear_node_load.clicked.connect(
+            lambda: self.geo._clear_node_load_ana(self.anl))
+        self.anl.btn_top_disp.clicked.connect(
+            lambda: self.geo._apply_top_load_ana(self.anl))
+        self.anl.btn_clr_loads.clicked.connect(
+            lambda: self.geo._clear_all_loads_ana(self.anl))
+        def _notify_load_widgets(geo_self, nid):
+            ana = self.anl
+            ld = geo_self._load_nodes.get(nid, (0., 0.))
+            ana.sb_node_Fx.setValue(ld[0])
+            ana.sb_node_Fy.setValue(ld[1])
+            ana.btn_apply_load.setEnabled(True)
+            ana.btn_clear_node_load.setEnabled(True)
+        self.geo._notify_load_widgets = lambda nid: _notify_load_widgets(
+            self.geo, nid)
         self.run  = RunTab()
         self.res  = ResultsTab()
         self.scr  = ScriptTab()
@@ -7008,6 +7254,8 @@ class MainWindow(QMainWindow):
             self.tabs.addTab(tab, name)
 
         bl.addWidget(self.tabs); vl.addWidget(self.body, stretch=1)
+
+        self.btn_box_select.toggled.connect(self._toggle_box_select)
 
         self.statusBar().showMessage(
             "Ready — set panel geometry, assign BCs/loads, then Run Analysis.")
@@ -7045,6 +7293,33 @@ class MainWindow(QMainWindow):
     def _refresh_cracks(self):
         self.crk.refresh_from_geometry(self.geo)
         self.tabs.setCurrentWidget(self.crk)
+
+    def _assign_load_from_ana(self):
+        nid = self.geo._selected_node
+        if nid is None:
+            return
+        Fx = self.anl.sb_node_Fx.value()
+        Fy = self.anl.sb_node_Fy.value()
+        if abs(Fx) > 1e-12 or abs(Fy) > 1e-12:
+            self.geo._load_nodes[nid] = (Fx, Fy)
+        else:
+            self.geo._load_nodes.pop(nid, None)
+        self.geo.canvas.set_load_nodes(self.geo._load_nodes)
+        self.geo._update_load_table_ext(self.anl.tbl_loads)
+        self.anl.lbl_sel_node_load = getattr(self.anl, 'lbl_sel_node_load', None)
+
+    def _toggle_box_select(self, on):
+        geo = self.geo
+        if on:
+            geo.btn_crack_mode.setChecked(False)
+            geo.btn_hand_draw.setChecked(False)
+            geo.canvas.set_mode(PanelMeshCanvas.MODE_BOX)
+            geo.lbl_canvas_hint.setText(
+                "Box select: drag a rectangle to select multiple nodes.")
+        else:
+            geo.canvas.set_mode(PanelMeshCanvas.MODE_SELECT)
+            geo.lbl_canvas_hint.setText(
+                "Select mode: click a node to assign BC / load")
 
     def _update_theme_button_style(self):
         self.btn_theme.setStyleSheet(
@@ -7465,7 +7740,7 @@ class MainWindow(QMainWindow):
                 except Exception:
                     ok, exe = False, ""
                 if ok:
-                    self.run.backend_mode = "wsl"
+                    self.btn_box_select.setChecked(False)
                     self.run.python_cmd = "python3"
                     self.run.wsl_activate.setText(act)
                     msg = f"Detected WSL virtualenv: {exe}"
@@ -7498,7 +7773,7 @@ class MainWindow(QMainWindow):
                                 except Exception:
                                     ok, exe = False, ""
                                 if ok:
-                                    self.run.backend_mode = "wsl"
+                                    self.btn_box_select.setChecked(False)
                                     self.run.python_cmd = "python3"
                                     self.run.wsl_activate.setText(act)
                                     msg = f"Detected WSL conda env '{env_name}': {exe}"
@@ -7515,7 +7790,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 ok, exe = False, ""
             if ok:
-                self.run.backend_mode = "wsl"
+                self.btn_box_select.setChecked(False)  # Ensure box select is unchecked when switching modes
                 self.run.python_cmd = "python3"
                 self.run.wsl_activate.setText("true")
                 msg = f"Detected WSL system python: {exe}"
