@@ -26,7 +26,7 @@ Architecture
   ScriptTab         exports a standalone runnable OpenSeesPy script
 """
 
-import sys, json, time, math, traceback, subprocess, shlex
+import sys, json, time, math, traceback, subprocess, shlex, copy
 from pathlib import Path
 import numpy as np
 
@@ -1329,10 +1329,10 @@ class GeometryTab(QWidget):
         root = QVBoxLayout(self); root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
 
         # ── left scroll panel ─────────────────────────────────────────────────
-        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFixedWidth(520)
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setMinimumWidth(380); scroll.setMaximumWidth(900)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        left = QWidget(); left.setMaximumWidth(500); lv = QVBoxLayout(left)
+        left = QWidget(); left.setMaximumWidth(880); lv = QVBoxLayout(left)
         lv.setContentsMargins(16, 8, 10, 8); lv.setSpacing(6)
         lv.addWidget(mk_lbl("2D Panel Geometry", "heading"))
 
@@ -1553,19 +1553,36 @@ class GeometryTab(QWidget):
         self.lbl_crack_mode_status.setVisible(False)
         vc.addWidget(self.lbl_crack_mode_status)
         row_inp2 = QHBoxLayout()
-        row_inp2.addWidget(mk_lbl("Crack angle (° from horizontal):"))
+        row_inp2.addWidget(mk_lbl("Default angle for new cracks (°):"))
         self.sb_crack_angle = dsb(0.0, -180., 180., 1, 1.0, w=80,
             tip=("Orientation of the crack line relative to horizontal.\n"
                  "0° = horizontal crack (runs left-to-right)\n"
                  "90° = vertical crack (runs bottom-to-top)\n"
                  "45° = diagonal crack\n\n"
                  "This sets the tangent and normal directions used by the\n"
-                 "zeroLength interface element in OpenSeesPy."))
+                 "zeroLength interface element in OpenSeesPy.\n\n"
+                 "This angle is locked in when a new crack is placed.\n"
+                 "Each crack's angle can be edited individually below."))
         row_inp2.addWidget(self.sb_crack_angle)
         row_inp2.addStretch()
         vc.addLayout(row_inp2)
+        hint = mk_lbl(
+            "This angle applies to the NEXT crack you place. "
+            "Each crack's angle can be changed individually below.",
+            "sub")
+        hint.setWordWrap(True)
+        vc.addWidget(hint)
         self.lbl_crack_ys = mk_lbl("No crack lines defined.", "sub")
         vc.addWidget(self.lbl_crack_ys)
+        # Per-crack list with individual delete buttons
+        self._crack_list_widget = QWidget()
+        self._crack_list_widget.setStyleSheet(
+            "background:transparent;border:none;")
+        self._crack_list_layout = QVBoxLayout(self._crack_list_widget)
+        self._crack_list_layout.setContentsMargins(0, 4, 0, 4)
+        self._crack_list_layout.setSpacing(6)
+        vc.addWidget(self._crack_list_widget)
+        QTimer.singleShot(100, self._refresh_crack_list)
         snap_row = QHBoxLayout()
         self.chk_edge_snap = QCheckBox("Enable edge snapping")
         self.chk_edge_snap.setChecked(True)
@@ -1869,6 +1886,7 @@ class GeometryTab(QWidget):
         self._current_load_case = "Default"
         self._selected_node = None
         self._crack_ys      = []
+        self._crack_angle_map = {}   # {round(y,6): angle_deg} — angle locked at placement time
         self._rebars = []
         # each entry: {'x1': float, 'y1': float, 'x2': float, 'y2': float,
         #              'L_unb': float, 'Es': float, 'As': float}
@@ -2103,7 +2121,16 @@ class GeometryTab(QWidget):
             self._cancel_hand_draw(reason="Hand draw canceled: Crack mode activated")
         if hasattr(self, "_main_win") and self._main_win is not None:
             self._main_win.btn_box_select.setChecked(False)
-        self._crack_mode_snapshot = list(self._crack_ys)
+        self._crack_mode_snapshot = {
+            "crack_ys": list(self._crack_ys),
+            "crack_angle_map": dict(self._crack_angle_map),
+            "crack_specs": copy.deepcopy(
+                self._mesh_data.get("crack_specs", [])
+                if self._mesh_data else []
+            ),
+            "hand_crack_ys": list(self._hand_crack_ys),
+            "hand_crack_defs": copy.deepcopy(self._hand_crack_defs),
+        }
         self._crack_mode_active = True
         self.lbl_crack_mode_status.setText(
             "🟠 Crack Mode active — click mesh to place/remove crack rows. "
@@ -2116,31 +2143,52 @@ class GeometryTab(QWidget):
             return
         self._crack_mode_snapshot = None
         self._crack_mode_active = False
-        self._set_mode_buttons_visible(crack_on=False, hand_on=self._hand_draw_active)
-        self._rebuild_mesh()
-        self._set_canvas_mode(PanelMeshCanvas.MODE_SELECT)
+        self._set_mode_buttons_visible(
+            crack_on=False, hand_on=self._hand_draw_active)
         self.btn_crack_mode.blockSignals(True)
         self.btn_crack_mode.setChecked(False)
         self.btn_crack_mode.blockSignals(False)
+        self._set_canvas_mode(PanelMeshCanvas.MODE_SELECT)
+        # Sync crack text field to current _crack_ys then rebuild
+        self._update_crack_text()
+        self._refresh_crack_label()
+        if self._mesh_data is not None:
+            self._generate()
+        else:
+            self.canvas.set_pending_cracks(
+                self._crack_ys, self.sb_W.value(), self.sb_H.value())
 
     def _cancel_crack_mode(self, reason=None):
         if not self._crack_mode_active:
             return
+        # Restore full snapshot
         if self._crack_mode_snapshot is not None:
-            self._crack_ys = list(self._crack_mode_snapshot)
-            self._refresh_crack_label()
-            self._update_crack_text()
-            self.canvas.set_pending_cracks(self._crack_ys, self.sb_W.value(), self.sb_H.value())
+            snap = self._crack_mode_snapshot
+            if isinstance(snap, dict):
+                self._crack_ys = list(snap.get("crack_ys", []))
+                self._crack_angle_map = dict(snap.get("crack_angle_map", {}))
+                self._hand_crack_ys = list(snap.get("hand_crack_ys", []))
+                self._hand_crack_defs = list(snap.get("hand_crack_defs", []))
+            else:
+                # backward compat: old snapshots were just a list
+                self._crack_ys = list(snap)
         self._crack_mode_snapshot = None
         self._crack_mode_active = False
-        self._set_mode_buttons_visible(crack_on=False, hand_on=self._hand_draw_active)
-        self._rebuild_mesh()
-        if reason:
-            self._flash_canvas_hint(reason)
-        self._set_canvas_mode(PanelMeshCanvas.MODE_SELECT)
+        self._set_mode_buttons_visible(
+            crack_on=False, hand_on=self._hand_draw_active)
         self.btn_crack_mode.blockSignals(True)
         self.btn_crack_mode.setChecked(False)
         self.btn_crack_mode.blockSignals(False)
+        self._set_canvas_mode(PanelMeshCanvas.MODE_SELECT)
+        # Sync UI then rebuild mesh with restored cracks
+        self._update_crack_text()
+        self._refresh_crack_label()
+        self.canvas.set_pending_cracks(
+            self._crack_ys, self.sb_W.value(), self.sb_H.value())
+        if self._mesh_data is not None:
+            self._generate()
+        if reason:
+            self._flash_canvas_hint(reason)
 
     def _enter_hand_draw(self):
         if self._crack_mode_active:
@@ -2302,7 +2350,13 @@ class GeometryTab(QWidget):
                 continue
             manual_ys.append(y)
         for y in manual_ys:
-            specs.append({"y": float(y), "angle_deg": float(self.sb_crack_angle.value()), "source": "manual"})
+            # Use the angle locked in when this crack was placed;
+            # fall back to the current spinbox value only if not found.
+            stored_angle = self._crack_angle_map.get(
+                round(float(y), 6),
+                float(self.sb_crack_angle.value())
+            )
+            specs.append({"y": float(y), "angle_deg": stored_angle, "source": "manual"})
         specs.extend(dict(item) for item in self._hand_crack_defs)
         specs.sort(key=lambda item: float(item.get("y", 0.0)))
         return specs
@@ -2384,12 +2438,15 @@ class GeometryTab(QWidget):
     def _add_crack_y(self, y):
         if not any(abs(y - yc) < 0.01 * self.sb_H.value() for yc in self._crack_ys):
             self._crack_ys.append(y); self._crack_ys.sort()
+            # Lock in the current angle for this specific crack
+            self._crack_angle_map[round(y, 6)] = float(
+                self.sb_crack_angle.value())
         self._refresh_crack_label()
         self.canvas.set_pending_cracks(self._crack_ys, self.sb_W.value(), self.sb_H.value())
+        self.canvas.update()
         self._update_crack_text()
         self.canvas._last_crack_y = y
         self.canvas._last_crack_y_remove = None
-        self.canvas.update()
         QTimer.singleShot(800, lambda: setattr(
             self.canvas, '_last_crack_y', None) or self.canvas.update())
         H = self.sb_H.value()
@@ -2402,17 +2459,26 @@ class GeometryTab(QWidget):
                 self.lbl_canvas_hint.setText(
                     "Crack mode: left-click to place/remove crack  |  "
                     "Right-drag to rotate angle")))
+        # Only auto-rebuild mesh if NOT in crack placement mode
+        if not self._crack_mode_active:
+            if self._mesh_data is not None:
+                self._generate()
 
     def _remove_crack_y(self, y):
         self._crack_ys = [yc for yc in self._crack_ys if abs(yc - y) > 0.01 * self.sb_H.value()]
+        self._crack_angle_map.pop(round(y, 6), None)
         self._refresh_crack_label()
         self.canvas.set_pending_cracks(self._crack_ys, self.sb_W.value(), self.sb_H.value())
+        self.canvas.update()
         self._update_crack_text()
         self.canvas._last_crack_y_remove = y
         self.canvas._last_crack_y = None
-        self.canvas.update()
         QTimer.singleShot(800, lambda: setattr(
             self.canvas, '_last_crack_y_remove', None) or self.canvas.update())
+        # Only auto-rebuild mesh if NOT in crack placement mode
+        if not self._crack_mode_active:
+            if self._mesh_data is not None:
+                self._generate()
 
     def _sync_crack_ys_from_text(self):
         """
@@ -2450,12 +2516,135 @@ class GeometryTab(QWidget):
         if self._crack_ys:
             self.lbl_crack_ys.setText(
                 f"{len(self._crack_ys)} crack line(s) at Y = " +
-                ", ".join(f"{y:.3f}" for y in self._crack_ys) +
-                f"   |   default angle = {self.sb_crack_angle.value():.1f}° from horizontal")
+                ", ".join(f"{y:.3f}" for y in self._crack_ys))
         else:
             self.lbl_crack_ys.setText("No crack lines defined.")
         self._refresh_rebar_crack_y_options()
         self._update_edge_snap_preview()
+        self._refresh_crack_list()
+
+    def _refresh_crack_list(self):
+        """Rebuild the per-crack card list with angle editors and remove buttons."""
+        if not hasattr(self, "_crack_list_layout"):
+            return
+        # Clear existing rows
+        while self._crack_list_layout.count():
+            item = self._crack_list_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        if not self._crack_ys:
+            lbl = QLabel("  No crack lines defined.")
+            lbl.setStyleSheet(
+                f"color:{TXTS};font-size:12px;padding:8px 4px;")
+            self._crack_list_layout.addWidget(lbl)
+            return
+
+        for idx, y in enumerate(sorted(self._crack_ys)):
+            # Outer card widget for each crack row
+            card = QWidget()
+            card.setStyleSheet(
+                f"QWidget{{background:{BG_CARD};"
+                f"border:1px solid {C1};"
+                f"border-radius:8px;margin:3px 0px;}}")
+            card.setMinimumHeight(100)
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(12, 10, 12, 10)
+            card_layout.setSpacing(8)
+
+            # Top row: crack number + Y position + delete button
+            top_row = QHBoxLayout()
+            top_row.setSpacing(8)
+
+            crack_num = QLabel(f"Crack {idx + 1}")
+            crack_num.setStyleSheet(
+                f"color:{C1};font-size:13px;font-weight:bold;"
+                f"background:transparent;border:none;")
+
+            y_lbl = QLabel(f"y = {y:.4f} m")
+            y_lbl.setStyleSheet(
+                f"color:{TXT};font-size:13px;font-weight:bold;"
+                f"background:transparent;border:none;")
+
+            btn_del = QPushButton("✕  Remove")
+            btn_del.setFixedHeight(32)
+            btn_del.setMinimumWidth(110)
+            btn_del.setStyleSheet(
+                f"QPushButton{{background:transparent;color:#f78166;"
+                f"border:1px solid #f78166;border-radius:5px;"
+                f"font-weight:bold;font-size:12px;padding:4px 10px;}}"
+                f"QPushButton:hover{{background:#f78166;color:{BG_DEEP};}}")
+
+            def _make_delete(crack_y):
+                def _on_del():
+                    self._remove_crack_y(float(crack_y))
+                    if not self._crack_mode_active:
+                        self._update_crack_text()
+                        if self._mesh_data is not None:
+                            self._generate()
+                    self._refresh_crack_list()
+                return _on_del
+            btn_del.clicked.connect(_make_delete(y))
+
+            top_row.addWidget(crack_num)
+            top_row.addWidget(y_lbl)
+            top_row.addStretch()
+            top_row.addWidget(btn_del)
+            card_layout.addLayout(top_row)
+
+            # Bottom row: angle label + spinbox + unit label
+            angle_row = QHBoxLayout()
+            angle_row.setSpacing(8)
+
+            stored_angle = self._crack_angle_map.get(
+                round(float(y), 6),
+                float(self.sb_crack_angle.value()))
+
+            angle_lbl = QLabel("Angle (° from horizontal):")
+            angle_lbl.setStyleSheet(
+                f"color:{TXTS};font-size:12px;"
+                f"background:transparent;border:none;")
+
+            angle_sb = QDoubleSpinBox()
+            angle_sb.setRange(-180., 180.)
+            angle_sb.setDecimals(1)
+            angle_sb.setSingleStep(1.0)
+            angle_sb.setValue(stored_angle)   # set BEFORE connecting signal
+            angle_sb.setFixedHeight(34)
+            angle_sb.setMinimumWidth(160)
+            angle_sb.setToolTip(
+                f"Angle for crack {idx + 1} at y={y:.4f} m\n"
+                f"0° = horizontal, 90° = vertical")
+            angle_sb.setStyleSheet(
+                f"QDoubleSpinBox{{background:{BG_INPUT};color:{TXT};"
+                f"border:1px solid {BORDER};border-radius:4px;"
+                f"padding:4px 8px;font-size:13px;font-weight:bold;}}"
+                f"QDoubleSpinBox:focus{{border:1px solid {C1};}}")
+
+            deg_lbl = QLabel("°")
+            deg_lbl.setStyleSheet(
+                f"color:{TXTS};font-size:13px;"
+                f"background:transparent;border:none;")
+
+            def _make_angle_handler(crack_y):
+                def _on_angle(val):
+                    self._crack_angle_map[round(float(crack_y), 6)] = float(val)
+                    if not self._crack_mode_active:
+                        self._update_crack_text()
+                        if self._mesh_data is not None:
+                            self._generate()
+                return _on_angle
+            angle_sb.valueChanged.connect(_make_angle_handler(y))
+
+            angle_row.addWidget(angle_lbl)
+            angle_row.addWidget(angle_sb)
+            angle_row.addWidget(deg_lbl)
+            angle_row.addStretch()
+            card_layout.addLayout(angle_row)
+
+            self._crack_list_layout.addWidget(card)
+
+        self._crack_list_layout.addStretch()
 
     def _refresh_rebar_crack_y_options(self):
         ys = sorted(float(y) for y in self._crack_ys)
@@ -3672,6 +3861,7 @@ class GeometryTab(QWidget):
             "edge_snap_threshold": self.sb_edge_snap_threshold.value(),
             "default_crack_angle_deg": self.sb_crack_angle.value(),
             "crack_ys": list(self._crack_ys),
+            "crack_angle_map": {str(k): v for k, v in self._crack_angle_map.items()},
         }
         if md:
             p["mesh_nodes"]       = {str(k): list(v) for k, v in md["nodes"].items()}
@@ -3727,6 +3917,10 @@ class GeometryTab(QWidget):
         finally:
             self._syncing_mesh_controls = False
         self._crack_ys = list(float(v) for v in state.get("crack_ys", []))
+        self._crack_angle_map = {
+            float(k): float(v)
+            for k, v in state.get("crack_angle_map", {}).items()
+        }
         self._hand_crack_ys = list(float(v) for v in state.get("hand_crack_ys", []))
         self._hand_crack_defs = [dict(item) for item in state.get("hand_crack_defs", [])]
         self._rebar_definitions = [
@@ -4286,10 +4480,10 @@ class CrackMaterialTab(QWidget):
         self.btn_auto_knkt = QPushButton("Auto kn/kt")
         self.btn_auto_knkt.setObjectName("flat")
         self.btn_auto_knkt.setToolTip("Compute kn/kt from Divakar Eq.31/32")
-        self.btn_set_msc2d_defaults = QPushButton("Set MSC2D Defaults")
+        self.btn_set_msc2d_defaults = QPushButton("⚙  Set MSC2D Defaults")
         self.btn_set_msc2d_defaults.setObjectName("flat")
         self.btn_set_msc2d_defaults.setToolTip(
-            "Set template to MultiSurfCrack2D with Table 2 defaults and apply to all crack elements")
+            "Set template to MultiSurfCrack2D with default values and apply to all crack elements")
         auto_row.addWidget(mk_lbl("f'c:")); auto_row.addWidget(self.sb_fc_auto)
         auto_row.addSpacing(8)
         auto_row.addWidget(mk_lbl("w0 (mm):")); auto_row.addWidget(self.sb_w0_auto)
@@ -4384,8 +4578,7 @@ class CrackMaterialTab(QWidget):
 
         self.lbl_msc2d_info = mk_lbl(
             "These parameters are passed directly to "
-            "ops.nDMaterial('MultiSurfCrack2D', ...)\n"
-            "Defaults from paper", "sub")
+            "ops.nDMaterial('MultiSurfCrack2D', ...)", "sub")
         self.lbl_msc2d_info.setWordWrap(True)
 
         self.sb_msc_E    = _make_dsb(210.0, 0., 1e9, 3, 1.0,  "E: loading normal stiffness (kN/m)")
@@ -4450,10 +4643,10 @@ class CrackMaterialTab(QWidget):
         fm2.addRow("cPath:",       self.sb_msc_cPath)
 
         msc_btn_row = QHBoxLayout()
-        self.btn_reset_msc2d_defaults = QPushButton("Reset to Paper Defaults (Table 2)")
+        self.btn_reset_msc2d_defaults = QPushButton("↺  Reset to Defaults")
         self.btn_reset_msc2d_defaults.setObjectName("flat")
         self.btn_reset_msc2d_defaults.setToolTip(
-            "Reset all MultiSurfCrack2D parameters to paper Table 2 defaults")
+            "Reset all MultiSurfCrack2D parameters to default values")
         msc_btn_row.addWidget(self.btn_reset_msc2d_defaults)
         msc_btn_row.addStretch()
         msc_btn_wrap = QWidget(); msc_btn_wrap.setLayout(msc_btn_row)
@@ -7540,8 +7733,7 @@ class MainWindow(QMainWindow):
         Set up widget state, defaults, and signal wiring for this section.
         """
         super().__init__()
-        self.setMinimumSize(1500, 900)
-        self.resize(1560, 960)
+        self.setMinimumSize(1100, 700)
         self.RUNS_DIR = str(Path.home() / "panel_analysis_runs")
         self._worker  = None
         self._is_windows = sys.platform.startswith("win")
@@ -7747,8 +7939,8 @@ class MainWindow(QMainWindow):
             self.tabs.addTab(tab, name)
 
         tab_host = QWidget()
-        tab_host.setMinimumWidth(520)
-        tab_host.setMaximumWidth(620)
+        tab_host.setMinimumWidth(380)
+        tab_host.setMaximumWidth(900)
         th_layout = QVBoxLayout(tab_host)
         th_layout.setContentsMargins(0, 0, 0, 0)
         th_layout.addWidget(self.tabs)
@@ -7758,7 +7950,7 @@ class MainWindow(QMainWindow):
         self.geo.canvas_panel.setMinimumWidth(480)
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
-        self.splitter.setSizes([560, 900])
+        QTimer.singleShot(0, self._fit_splitter_to_screen)
 
         bl.addWidget(self.splitter); vl.addWidget(self.body, stretch=1)
 
@@ -7797,8 +7989,15 @@ class MainWindow(QMainWindow):
 
         QTimer.singleShot(900, self.check_wsl)
         self._on_tab_changed(self.tabs.currentIndex())
+        QTimer.singleShot(0, lambda: self.showMaximized())
 
     #  helpers
+    def _fit_splitter_to_screen(self):
+        total = self.splitter.width()
+        left = min(620, int(total * 0.42))
+        right = total - left
+        self.splitter.setSizes([left, right])
+
     def _refresh_cracks(self):
         self.crk.refresh_from_geometry(self.geo)
         self.tabs.setCurrentWidget(self.crk)
@@ -8645,7 +8844,7 @@ def main():
         app.setStyle("Fusion")
         app.setStyleSheet(_build_style(CURRENT_THEME))
         w = MainWindow()
-        w.show()
+        w.showMaximized()
         sys.exit(app.exec_())
     except Exception as e:
         tb_str = traceback.format_exc()
