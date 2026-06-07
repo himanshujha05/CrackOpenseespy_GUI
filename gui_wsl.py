@@ -106,7 +106,7 @@ QWidget{{background:{t['BG_DEEP']};color:{t['TXT']};
     font-family:'Segoe UI','Cascadia Code','Consolas',sans-serif;font-size:13px;}}
 QScrollArea,QScrollArea>QWidget,QScrollArea>QWidget>QWidget{{background:{t['BG_DEEP']};}}
 QTabWidget::pane{{border:1px solid {t['BORDER']};background:{t['BG_PANEL']};border-radius:0 4px 4px 4px;}}
-QTabBar::tab{{background:{t['BG_DEEP']};color:{t['TXTS']};padding:9px 20px;
+QTabBar::tab{{background:{t['BG_DEEP']};color:{t['TXTS']};padding:8px 12px;
     border:1px solid {t['BORDER']};border-bottom:none;border-radius:4px 4px 0 0;
         font-weight:bold;font-size:12px;margin-right:2px;min-height:20px;}}
 QTabBar::tab:selected{{background:{t['BG_PANEL']};color:{t['C1']};border-bottom:2px solid {t['C1']};}}
@@ -125,7 +125,7 @@ QComboBox QAbstractItemView{{background:{t['BG_CARD']};border:1px solid {t['BORD
     selection-background-color:{t['C1']};color:{t['TXT']};}}
 QComboBox::drop-down{{border:none;width:22px;}}
 QPushButton{{background:{t['C1']};color:{t['BG_DEEP']};border-radius:5px;padding:8px 20px;
-        font-weight:bold;font-size:12px;border:1px solid transparent;min-height:34px;}}
+        font-weight:bold;font-size:13px;border:1px solid transparent;min-height:38px;}}
 QPushButton:hover{{background:#79b8ff;}}
 QPushButton:pressed{{background:#388bfd;}}
 QPushButton:disabled{{background:{t['BORDER']};color:{t['TXTS']};}}
@@ -134,12 +134,13 @@ QPushButton#danger:hover{{background:#ff7b72;}}
 QPushButton#success{{background:{t['C2']};color:{t['BG_DEEP']};font-size:13px;font-weight:bold;}}
 QPushButton#success:hover{{background:#56d364;}}
 QPushButton#success:disabled{{background:{t['BORDER']};color:{t['TXTS']};}}
-QPushButton#flat{{background:{t['BG_CARD']};color:{t['TXTS']};border:1px solid {t['BORDER']};}}
-QPushButton#flat:hover{{color:{t['TXT']};border-color:{t['TXTS']};}}
+QPushButton#flat{{background:{t['BG_CARD']};color:{t['TXT']};border:1px solid {t['TXTS']};border-radius:5px;padding:7px 14px;font-size:12px;font-weight:bold;min-height:36px;}}
+QPushButton#flat:hover{{background:{t['BG_PANEL']};color:{t['TXT']};border-color:{t['C1']};}}
 QPushButton#flat:disabled{{background:{t['BG_DEEP']};color:{t['BORDER']};border-color:{t['BORDER']};}}
 QPushButton#amber{{background:{t['C4']};color:{t['BG_DEEP']};font-weight:bold;}}
 QPushButton#amber:hover{{background:#e5c07b;}}
-QPushButton#warn{{background:{t['C4']};color:{t['BG_DEEP']};font-weight:bold;font-size:12px;}}
+QPushButton#warn{{background:{t['C4']};color:{t['BG_DEEP']};font-weight:bold;font-size:13px;min-height:36px;border-radius:5px;padding:7px 16px;}}
+QPushButton#warn:hover{{background:#e5c07b;}}
 QTableWidget{{background:{t['BG_INPUT']};gridline-color:{t['BORDER']};
     border:1px solid {t['BORDER']};border-radius:4px;color:{t['TXT']};}}
 QHeaderView::section{{background:{t['BG_CARD']};color:{t['C1']};padding:7px;
@@ -442,6 +443,7 @@ class PanelMeshCanvas(QWidget):
     node_moved           = pyqtSignal(int, float, float)   # nid, new_x, new_y
     crack_y_added        = pyqtSignal(float)
     crack_y_removed      = pyqtSignal(float)
+    crack_angle_changed  = pyqtSignal(float)
     hand_strokes_changed = pyqtSignal()
     hand_stroke_erased   = pyqtSignal(int)
     mode_exited_draw     = pyqtSignal()
@@ -473,6 +475,12 @@ class PanelMeshCanvas(QWidget):
         self.show_elem_ids = False
         self.mode         = self.MODE_SELECT
         self._hover_model = None
+        self._crack_angle_deg = 0.0
+        self._rotating_crack = False
+        self._rotate_start_px = None
+        self._last_crack_y = None
+        self._last_crack_y_remove = None
+        self._last_click_model = None
         self._pending_crack_ys = []
         self._below_nodes = set()    # nids on the BELOW side of cracks (orange)
         self._above_nodes = set()    # nids on the ABOVE side of cracks (violet)
@@ -500,6 +508,8 @@ class PanelMeshCanvas(QWidget):
         self._drag_px_start = None   # (px, py) at press, for threshold check
         self._grid_nx       = 0      # mesh grid divisions (for snap)
         self._grid_ny       = 0
+        self.read_only      = False
+        self._interactive   = True
         self.setMouseTracking(True)
 
     # coordinate transforms between model space and canvas pixels
@@ -596,6 +606,7 @@ class PanelMeshCanvas(QWidget):
         self.panel_W = max(W, 0.01); self.panel_H = max(H, 0.01)
         self.update()
 
+
     def set_bc_nodes(self, d):   self.bc_nodes = dict(d); self.update()
     def set_load_nodes(self, d): self.load_nodes = dict(d); self.update()
     def set_box_selected(self, nids): self._box_selected = set(nids); self.update()
@@ -603,14 +614,28 @@ class PanelMeshCanvas(QWidget):
 
     def set_mode(self, mode):
         self.mode = mode
-        if mode == self.MODE_DRAW:
-            self.setCursor(Qt.CrossCursor)
+        if self.read_only:
+            self.setCursor(Qt.ArrowCursor)
+        elif mode == self.MODE_DRAW:
+            self.setCursor(Qt.PointingHandCursor)
         elif mode == self.MODE_CRACK:
-            self.setCursor(Qt.UpArrowCursor)
+            self.setCursor(Qt.CrossCursor)
         elif mode == self.MODE_BOX:
             self.setCursor(Qt.CrossCursor)
         else:
             self.setCursor(Qt.ArrowCursor)
+        self.update()
+
+    def set_read_only(self, on):
+        self.read_only = bool(on)
+        if self.read_only:
+            self.setCursor(Qt.ArrowCursor)
+        else:
+            self.set_mode(self.mode)
+        self.update()
+
+    def set_interactive(self, enabled: bool):
+        self._interactive = bool(enabled)
         self.update()
 
     def set_background_image(self, image_path):
@@ -680,6 +705,8 @@ class PanelMeshCanvas(QWidget):
         """
         Handle a UI event and keep the related state in sync.
         """
+        if self.read_only and event.button() in (Qt.LeftButton, Qt.RightButton):
+            return
         if event.button() == Qt.MiddleButton:
             self._panning = True
             self._pan_start = (event.x(), event.y(), self._pan_x, self._pan_y)
@@ -691,7 +718,8 @@ class PanelMeshCanvas(QWidget):
             if self._erase_nearest_stroke(mx, my):
                 return
         if event.button() != Qt.LeftButton:
-            return
+            if not (self.mode == self.MODE_CRACK and event.button() == Qt.RightButton):
+                return
         if self.mode == self.MODE_SELECT:
             nid = self._node_near(px, py)
             if nid is not None:
@@ -718,11 +746,18 @@ class PanelMeshCanvas(QWidget):
                 self.node_clicked.emit(-1)
                 self.update()
         elif self.mode == self.MODE_CRACK:
-            _, my = self._to_model(px, py)
+            if event.button() == Qt.RightButton:
+                self._rotating_crack = True
+                self._rotate_start_px = (event.x(), event.y())
+                self.setCursor(Qt.SizeAllCursor)
+                return
+            mx, my = self._to_model(px, py)
             my = max(0.005 * self.panel_H, min(0.995 * self.panel_H, my))
             for yc in list(self._pending_crack_ys):
                 if abs(yc - my) < 0.04 * self.panel_H:
+                    self._last_click_model = (mx, my)
                     self.crack_y_removed.emit(yc); return
+            self._last_click_model = (mx, my)
             self.crack_y_added.emit(my)
         elif self.mode == self.MODE_DRAW:
             self._drawing = True
@@ -733,6 +768,8 @@ class PanelMeshCanvas(QWidget):
             self._box_start = (px, py); self._box_end = (px, py); self.update()
 
     def mouseDoubleClickEvent(self, event):
+        if self.read_only:
+            return
         if event.button() != Qt.LeftButton:
             return
         if self.mode != self.MODE_SELECT:
@@ -742,6 +779,18 @@ class PanelMeshCanvas(QWidget):
             self.node_double_clicked.emit(nid)
 
     def mouseMoveEvent(self, event):
+        if self.read_only and not self._panning:
+            return
+        if self._rotating_crack and self._rotate_start_px:
+            dx = event.x() - self._rotate_start_px[0]
+            dy = event.y() - self._rotate_start_px[1]
+            if abs(dx) > 2 or abs(dy) > 2:
+                angle_rad = math.atan2(-dy, dx)
+                angle_deg = math.degrees(angle_rad)
+                self._crack_angle_deg = float(angle_deg)
+                self.crack_angle_changed.emit(float(angle_deg))
+                self.update()
+            return
         if self._panning and self._pan_start:
             sx, sy, px0, py0 = self._pan_start
             self._pan_x = px0 + (event.x() - sx)
@@ -780,6 +829,13 @@ class PanelMeshCanvas(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, event):
+        if self.read_only and event.button() in (Qt.LeftButton, Qt.RightButton):
+            return
+        if event.button() == Qt.RightButton and self._rotating_crack:
+            self._rotating_crack = False
+            self._rotate_start_px = None
+            self.setCursor(Qt.CrossCursor)
+            return
         if event.button() == Qt.MiddleButton and self._panning:
             self._panning = False
             self._pan_start = None
@@ -814,10 +870,6 @@ class PanelMeshCanvas(QWidget):
                 self.hand_strokes.append(list(self._cur_stroke))
                 self.hand_strokes_changed.emit()
             self._cur_stroke = []
-            # Automatically switch back to Select mode so user can click nodes
-            self.mode = self.MODE_SELECT
-            self.setCursor(Qt.ArrowCursor)
-            self.mode_exited_draw.emit()   # new signal, see below
             self.update()
             return
 
@@ -860,21 +912,32 @@ class PanelMeshCanvas(QWidget):
         if self.crack_pairs:
             by_y = {}
             for cp in self.crack_pairs:
-                by_y.setdefault(round(cp[2], 6), []).append(cp[3])
-            p.setPen(QPen(QColor(C3), 3))
-            for y, xs in sorted(by_y.items()):
-                xs_s = sorted(xs)
-                if len(xs_s) >= 2:
-                    xL_px, yp = self._to_px(xs_s[0], y)
-                    xR_px, _ = self._to_px(xs_s[-1], y)
-                    p.drawLine(xL_px, yp, xR_px, yp)
+                by_y.setdefault(round(cp[2], 6), []).append(cp)
+            p.setPen(QPen(QColor(C3), 2))
+            for y, cps in sorted(by_y.items()):
+                cps_s = sorted(cps, key=lambda c: c[3])
+                if len(cps_s) >= 2:
+                    tx = float(cps_s[0][4]) if len(cps_s[0]) > 4 else 1.0
+                    ty = float(cps_s[0][5]) if len(cps_s[0]) > 5 else 0.0
+                    x_left  = float(cps_s[0][3])
+                    x_right = float(cps_s[-1][3])
+                    mid_x = (x_left + x_right) / 2.0
+                    half_span = (x_right - x_left) / 2.0
+                    x0m = mid_x - tx * half_span
+                    y0m = y      - ty * half_span
+                    x1m = mid_x + tx * half_span
+                    y1m = y      + ty * half_span
+                    xL_px, yL_px = self._to_px(x0m, y0m)
+                    xR_px, yR_px = self._to_px(x1m, y1m)
+                    p.setPen(QPen(QColor(C3), 2))
+                    p.drawLine(xL_px, yL_px, xR_px, yR_px)
                     # Edge-snapped indicator
                     if (abs(y) < 0.05 * self.panel_H or
                             abs(y - self.panel_H) < 0.05 * self.panel_H):
                         p.setPen(QPen(QColor(C4), 1))
                         p.setFont(QFont("Consolas", 8))
-                        p.drawText(xR_px + 4, yp - 4, "EDGE-SNAPPED")
-                        p.setPen(QPen(QColor(C3), 3))
+                        p.drawText(xR_px + 4, yR_px - 4, "EDGE-SNAPPED")
+                        p.setPen(QPen(QColor(C3), 2))
 
         # Crack interface elements: perpendicular tick marks at each crack node
         # (zero-length elements between coincident nodes are invisible as lines)
@@ -983,15 +1046,157 @@ class PanelMeshCanvas(QWidget):
 
         # Crack-mode hover line
         if self.mode == self.MODE_CRACK and self._hover_model:
-            _, my = self._hover_model
-            if 0 < my < self.panel_H:
-                yp = self._to_px(0, my)[1]
-                xL = self._to_px(0, 0)[0]; xR = self._to_px(self.panel_W, 0)[0]
-                p.setPen(QPen(QColor(C3), 1, Qt.DashLine))
-                p.drawLine(xL, yp, xR, yp)
-                p.setPen(QPen(QColor(C3), 1))
-                p.setFont(QFont("Consolas", 9))
-                p.drawText(xR + 4, yp + 4, f"y={my:.3f}")
+            mx_h, my_h = self._hover_model
+            if 0 < my_h < self.panel_H:
+                angle_deg = float(getattr(self, '_crack_angle_deg', 0.0))
+                angle_rad = math.radians(angle_deg)
+                cos_a = math.cos(angle_rad)
+                sin_a = math.sin(angle_rad)
+
+                # Full line spans the whole panel diagonal
+                half_len = math.hypot(self.panel_W, self.panel_H)
+                x0m = mx_h - cos_a * half_len
+                y0m = my_h - sin_a * half_len
+                x1m = mx_h + cos_a * half_len
+                y1m = my_h + sin_a * half_len
+
+                # Simple clamp to panel bounds — no parametric clipping
+                x0m = max(0.0, min(self.panel_W, x0m))
+                y0m = max(0.0, min(self.panel_H, y0m))
+                x1m = max(0.0, min(self.panel_W, x1m))
+                y1m = max(0.0, min(self.panel_H, y1m))
+
+                px0, py0 = self._to_px(x0m, y0m)
+                px1, py1 = self._to_px(x1m, y1m)
+                pxc, pyc = self._to_px(mx_h, my_h)
+                total_len_m = math.hypot(x1m - x0m, y1m - y0m)
+
+                if total_len_m < 1e-6:
+                    pass
+                else:
+                    CYAN = "#00bcd4"
+
+                    # ── Ruler baseline (solid gray body, drawn first) ──
+                    p.setPen(QPen(QColor(TXTS), 1, Qt.SolidLine))
+                    p.drawLine(px0, py0, px1, py1)
+
+                    # ── Main crack line (dashed cyan, on top) ──
+                    p.setPen(QPen(QColor(CYAN), 1, Qt.DashLine))
+                    p.drawLine(px0, py0, px1, py1)
+
+                    # ── Ruler tick marks along the line ──
+                    minor_spacing_m = 0.02
+                    major_spacing_m = 0.10
+                    minor_tick_px = 4
+                    major_tick_px = 10
+                    label_tick_px = 18
+
+                    perp_cos = -sin_a
+                    perp_sin =  cos_a
+
+                    n_ticks = int(total_len_m / minor_spacing_m) + 1
+                    for i in range(n_ticks):
+                        d = i * minor_spacing_m
+                        t = d / max(total_len_m, 1e-9)
+                        xm = x0m + t * (x1m - x0m)
+                        ym = y0m + t * (y1m - y0m)
+                        pxt, pyt = self._to_px(xm, ym)
+
+                        is_major = abs(round(d / major_spacing_m) * major_spacing_m - d) < 1e-4
+                        is_label = abs(round(d / 0.5) * 0.5 - d) < 1e-4 and d > 0.01
+
+                        tick_h = (label_tick_px if is_label
+                                  else major_tick_px if is_major
+                                  else minor_tick_px)
+
+                        p.setPen(QPen(QColor(CYAN), 1 if not is_major else 2))
+                        p.drawLine(
+                            int(pxt + perp_cos * tick_h),
+                            int(pyt + perp_sin * tick_h),
+                            int(pxt - perp_cos * tick_h),
+                            int(pyt - perp_sin * tick_h),
+                        )
+
+                        if is_label and 0 <= xm <= self.panel_W and 0 <= ym <= self.panel_H:
+                            p.setFont(QFont("Consolas", 6))
+                            p.setPen(QPen(QColor("#00bcd4"), 1))
+                            p.drawText(
+                                int(pxt - 10),
+                                int(pyt - abs(perp_sin) * (label_tick_px + 14) - 8),
+                                f"{d:.1f}")
+
+                    # ── End caps (thick perpendicular bars) ──
+                    p.setPen(QPen(QColor(CYAN), 3))
+                    for px_t, py_t in [(px0, py0), (px1, py1)]:
+                        p.drawLine(
+                            int(px_t + perp_cos * major_tick_px),
+                            int(py_t + perp_sin * major_tick_px),
+                            int(px_t - perp_cos * major_tick_px),
+                            int(py_t - perp_sin * major_tick_px),
+                        )
+
+                    # ── Centre crosshair (only when hover point inside panel) ──
+                    if (0 <= mx_h <= self.panel_W and 0 < my_h < self.panel_H):
+                        p.setPen(QPen(QColor(C2), 2))
+                        p.drawLine(pxc - 8, pyc, pxc + 8, pyc)
+                        p.drawLine(pxc, pyc - 8, pxc, pyc + 8)
+
+                    # ── Info label with filled background ──
+                    label = (f"y={my_h:.3f} m   θ={angle_deg:.1f}°   "
+                             f"L={total_len_m:.3f} m")
+                    p.setFont(QFont("Consolas", 9, QFont.Bold))
+                    fm = QFontMetrics(p.font())
+                    lw = fm.horizontalAdvance(label) + 12
+                    lh = fm.height() + 6
+                    lx = px1 + 10
+                    ly = py1 - lh
+                    bg_color = QColor(BG_DEEP)
+                    bg_color.setAlpha(180)
+                    p.setBrush(QBrush(bg_color))
+                    p.setPen(Qt.NoPen)
+                    p.drawRoundedRect(lx - 4, ly - 2, lw, lh, 4, 4)
+                    p.setPen(QPen(QColor(C3), 1))
+                    p.drawText(lx, ly + fm.ascent(), label)
+
+                    # ── Angle arc ──
+                    p.setPen(QPen(QColor(C4), 1))
+                    arc_r = 22
+                    p.drawArc(pxc - arc_r, pyc - arc_r,
+                              arc_r * 2, arc_r * 2,
+                              0, int(-angle_deg * 16))
+
+        # Click confirmation flash — green band on add, red band on remove
+        for flash_y, flash_color in [
+            (self._last_crack_y,        "#3fb950"),
+            (self._last_crack_y_remove, "#f78166"),
+        ]:
+            if flash_y is not None:
+                _, fyp = self._to_px(0, flash_y)
+                x0f = self._to_px(0, 0)[0]
+                x1f = self._to_px(self.panel_W, 0)[0]
+                fc = QColor(flash_color)
+                fc.setAlpha(100)
+                p.setPen(Qt.NoPen)
+                p.setBrush(QBrush(fc))
+                p.drawRect(x0f, fyp - 3, x1f - x0f, 6)
+                p.setBrush(Qt.NoBrush)
+
+        # Last-click solid line — shows where crack landed after mouse moves away
+        if self.mode == self.MODE_CRACK and self._last_click_model is not None:
+            lmx, lmy = self._last_click_model
+            angle_deg_lc = getattr(self, '_crack_angle_deg', 0.0)
+            angle_rad_lc = math.radians(angle_deg_lc)
+            cos_lc = math.cos(angle_rad_lc)
+            sin_lc = math.sin(angle_rad_lc)
+            half_lc = min(self.panel_W, self.panel_H) * 0.55
+            lx0m = max(0.0, min(self.panel_W, lmx - cos_lc * half_lc))
+            ly0m = max(0.0, min(self.panel_H, lmy - sin_lc * half_lc))
+            lx1m = max(0.0, min(self.panel_W, lmx + cos_lc * half_lc))
+            ly1m = max(0.0, min(self.panel_H, lmy + sin_lc * half_lc))
+            lpx0, lpy0 = self._to_px(lx0m, ly0m)
+            lpx1, lpy1 = self._to_px(lx1m, ly1m)
+            p.setPen(QPen(QColor(C2), 2, Qt.SolidLine))
+            p.drawLine(lpx0, lpy0, lpx1, lpy1)
 
         # Dimension labels
         p.setPen(QPen(QColor(TXTS), 1)); p.setFont(QFont("Consolas", 8))
@@ -1042,6 +1247,7 @@ class PanelMeshCanvas(QWidget):
         for i, (sym, col, txt) in enumerate(legend):
             p.setPen(QPen(QColor(col), 1))
             p.drawText(lx_, H - 6 - i * 13, f"{sym} {txt}")
+
         p.end()
 
     def _paint_empty(self, p, W, H):
@@ -1058,8 +1264,17 @@ class PanelMeshCanvas(QWidget):
             for yc in self._pending_crack_ys:
                 yp = self._to_px(0, yc)[1]
                 p.drawLine(x0, yp, x1, yp)
+        # Dashed placeholder rectangle when no mesh yet
+        if self.panel_W > 0 and self.panel_H > 0:
+            x0p, y0p = self._to_px(0, 0); x1p, y1p = self._to_px(self.panel_W, self.panel_H)
+            dash_pen = QPen(QColor(BORDER), 1.5, Qt.DashLine)
+            p.setPen(dash_pen); p.setBrush(Qt.NoBrush)
+            p.drawRect(x0p, y1p, x1p - x0p, y0p - y1p)
         p.setPen(QPen(QColor(TXTS), 1)); p.setFont(QFont("Segoe UI", 10))
-        msg = "Set dimensions  →  Generate Mesh"
+        if self._interactive:
+            msg = "Set dimensions  →  Generate Mesh"
+        else:
+            msg = "Generate mesh to view panel"
         fm = QFontMetrics(p.font())
         p.drawText((W - fm.horizontalAdvance(msg)) // 2, H // 2, msg)
 
@@ -1105,18 +1320,19 @@ class PanelMeshCanvas(QWidget):
 class GeometryTab(QWidget):
     mesh_generated = pyqtSignal()
 
-    def __init__(self):
+    def __init__(self, shared_canvas=None):
         """
         Set up widget state, defaults, and signal wiring for this section.
         """
         super().__init__()
-        root = QHBoxLayout(self); root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
+        self.canvas = shared_canvas or PanelMeshCanvas()
+        root = QVBoxLayout(self); root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
 
         # ── left scroll panel ─────────────────────────────────────────────────
-        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFixedWidth(460)
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFixedWidth(520)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        left = QWidget(); left.setMaximumWidth(438); lv = QVBoxLayout(left)
+        left = QWidget(); left.setMaximumWidth(500); lv = QVBoxLayout(left)
         lv.setContentsMargins(16, 8, 10, 8); lv.setSpacing(6)
         lv.addWidget(mk_lbl("2D Panel Geometry", "heading"))
 
@@ -1312,10 +1528,30 @@ class GeometryTab(QWidget):
         self.btn_crack_mode = QPushButton("✏ Crack Mode")
         self.btn_crack_mode.setObjectName("flat")
         self.btn_crack_mode.setCheckable(True)
+        self.btn_crack_mode.setStyleSheet(
+            f"QPushButton#flat:checked{{background:{C4};color:{BG_DEEP};"
+            f"border:1px solid {C4};}}")
         self.btn_crack_mode.setToolTip("Toggle crack placement mode: click canvas to add/remove crack Y")
         row_inp1.addWidget(self.txt_crack_y, stretch=1)
         row_inp1.addWidget(self.btn_crack_mode)
         vc.addLayout(row_inp1)
+        row_crack_commit = QHBoxLayout()
+        self.btn_crack_set = QPushButton("✔ Set Cracks")
+        self.btn_crack_set.setStyleSheet("background:#1a7a1a;color:#fff;font-weight:bold;border-radius:4px;")
+        self.btn_crack_cancel = QPushButton("✖ Cancel")
+        self.btn_crack_cancel.setStyleSheet("background:#7a1a1a;color:#fff;font-weight:bold;border-radius:4px;")
+        for btn in [self.btn_crack_set, self.btn_crack_cancel]:
+            btn.setVisible(False)
+            btn.setMinimumHeight(30)
+        row_crack_commit.addWidget(self.btn_crack_set)
+        row_crack_commit.addWidget(self.btn_crack_cancel)
+        row_crack_commit.addStretch()
+        vc.addLayout(row_crack_commit)
+        self.lbl_crack_mode_status = mk_lbl("", "sub")
+        self.lbl_crack_mode_status.setStyleSheet(f"color:{C4};font-weight:bold;")
+        self.lbl_crack_mode_status.setWordWrap(True)
+        self.lbl_crack_mode_status.setVisible(False)
+        vc.addWidget(self.lbl_crack_mode_status)
         row_inp2 = QHBoxLayout()
         row_inp2.addWidget(mk_lbl("Crack angle (° from horizontal):"))
         self.sb_crack_angle = dsb(0.0, -180., 180., 1, 1.0, w=80,
@@ -1349,6 +1585,9 @@ class GeometryTab(QWidget):
         self.btn_hand_draw   = QPushButton("Draw Crack")
         self.btn_hand_draw.setObjectName("flat")
         self.btn_hand_draw.setCheckable(True)
+        self.btn_hand_draw.setStyleSheet(
+            f"QPushButton#flat:checked{{background:{C4};color:{BG_DEEP};"
+            f"border:1px solid {C4};}}")
         self.btn_hand_draw.setToolTip("Toggle draw mode: drag to sketch a crack stroke; right-click a stroke to erase it")
         self.btn_undo_stroke = QPushButton("Undo")
         self.btn_undo_stroke.setObjectName("flat")
@@ -1361,6 +1600,23 @@ class GeometryTab(QWidget):
         row_hd.addWidget(self.btn_clr_strokes)
         row_hd.addStretch()
         vc.addLayout(row_hd)
+        row_hand_commit = QHBoxLayout()
+        self.btn_hand_set = QPushButton("✔ Set Drawing")
+        self.btn_hand_set.setStyleSheet("background:#1a7a1a;color:#fff;font-weight:bold;border-radius:4px;")
+        self.btn_hand_cancel = QPushButton("✖ Cancel Drawing")
+        self.btn_hand_cancel.setStyleSheet("background:#7a1a1a;color:#fff;font-weight:bold;border-radius:4px;")
+        for btn in [self.btn_hand_set, self.btn_hand_cancel]:
+            btn.setVisible(False)
+            btn.setMinimumHeight(30)
+        row_hand_commit.addWidget(self.btn_hand_set)
+        row_hand_commit.addWidget(self.btn_hand_cancel)
+        row_hand_commit.addStretch()
+        vc.addLayout(row_hand_commit)
+        self.lbl_hand_mode_status = mk_lbl("", "sub")
+        self.lbl_hand_mode_status.setStyleSheet(f"color:{C4};font-weight:bold;")
+        self.lbl_hand_mode_status.setWordWrap(True)
+        self.lbl_hand_mode_status.setVisible(False)
+        vc.addWidget(self.lbl_hand_mode_status)
         self.lbl_hand_strokes = mk_lbl("hand strokes: 0", "sub")
         vc.addWidget(self.lbl_hand_strokes)
         vc.addWidget(mk_lbl(
@@ -1592,10 +1848,123 @@ class GeometryTab(QWidget):
 
         scroll.setWidget(left)
         root.addWidget(scroll)
+        self.canvas_panel = self._build_canvas_panel()
 
-        #right panel: mesh canvas 
+        # internal state
+        self._mesh_data = None   # {nodes, tris, crack_pairs, crack_rows, W, H, nx, ny, crack_ys}
+        self._bc_nodes  = {}     # {nid: (fix_x, fix_y)}
+        self._load_nodes = {}    # {nid: (Fx, Fy)} — always == _load_cases[_current_load_case]["nodes"]
+        self._load_cases = {     # keyed by case name
+            "Default": {
+                "ts_type": "Constant",
+                "description": "",
+                "expected_application": "Applied at t=0, held constant throughout",
+                "nodes": self._load_nodes,   # share reference
+                "path_time": [],
+                "path_factors": [],
+                "active": True,
+                "scale": 1.0,
+            }
+        }
+        self._current_load_case = "Default"
+        self._selected_node = None
+        self._crack_ys      = []
+        self._rebars = []
+        # each entry: {'x1': float, 'y1': float, 'x2': float, 'y2': float,
+        #              'L_unb': float, 'Es': float, 'As': float}
+        self._hand_strokes  = []   # mirror of canvas.hand_strokes
+        self._hand_crack_ys = []   # y_mean derived from each hand stroke
+        self._hand_crack_defs = []
+        self._bg_image_path = ""
+        self._snap_messages = []
+        self._syncing_mesh_controls = False
+        self._box_selected_nodes = []
+        self._crack_mode_snapshot = None
+        self._hand_draw_snapshot = None
+        self._crack_mode_active = False
+        self._hand_draw_active = False
+
+        # wire
+        self.btn_gen.clicked.connect(self._generate)
+        self.btn_update_mesh.clicked.connect(self._update_mesh)
+        self.btn_validate.clicked.connect(self._validate_mesh)
+        self.btn_clear_mesh.clicked.connect(self._clear_mesh)
+        self.btn_import_mesh.clicked.connect(self._import_external_mesh)
+        self.btn_upload_img.clicked.connect(self._upload_background_image)
+        self.btn_clear_img.clicked.connect(self._clear_background_image)
+        self.btn_crack_mode.toggled.connect(self._toggle_crack_mode)
+        self.btn_crack_set.clicked.connect(self._commit_crack_mode)
+        self.btn_crack_cancel.clicked.connect(self._cancel_crack_mode)
+        self.txt_crack_y.editingFinished.connect(self._sync_crack_ys_from_text)
+        self.canvas.node_clicked.connect(self._on_node_clicked)
+        self.canvas.node_double_clicked.connect(self._on_node_double_clicked)
+        self.canvas.box_selection_changed.connect(self._on_box_selection_changed)
+        self.canvas.node_moved.connect(self._on_node_moved)
+        self.canvas.crack_y_added.connect(self._add_crack_y)
+        self.canvas.crack_y_removed.connect(self._remove_crack_y)
+        self.canvas.crack_angle_changed.connect(
+            lambda v: self.sb_crack_angle.setValue(round(v, 1)))
+        self.canvas.hand_strokes_changed.connect(self._on_hand_strokes_changed)
+        self.btn_hand_draw.toggled.connect(self._toggle_hand_draw)
+        self.btn_hand_set.clicked.connect(self._commit_hand_draw)
+        self.btn_hand_cancel.clicked.connect(self._cancel_hand_draw)
+        self.btn_undo_stroke.clicked.connect(self.canvas.undo_hand_stroke)
+        self.btn_clr_strokes.clicked.connect(self.canvas.clear_hand_strokes)
+        self.btn_fix_bot.clicked.connect(self._fix_bottom)
+        self.btn_roller_top.clicked.connect(self._roller_top)
+        self.btn_clr_bc.clicked.connect(self._clear_all_bc)
+        self.btn_apply_bc.clicked.connect(self._apply_bc_to_node)
+        self.btn_clear_node_bc.clicked.connect(self._clear_node_bc)
+        self.btn_rb_add.clicked.connect(self._add_rebar)
+        self.btn_rb_del.clicked.connect(self._del_rebar)
+        self.btn_rb_clr.clicked.connect(self._clr_rebars)
+        self.cmb_load_case.currentTextChanged.connect(self._on_load_case_changed)
+        self.btn_add_case.clicked.connect(self._add_load_case)
+        self.btn_remove_case.clicked.connect(self._remove_load_case)
+        self.cmb_lc_ts_type.currentTextChanged.connect(self._on_lc_ts_changed)
+        self.cmb_lc_ts_type.currentTextChanged.connect(self._update_lc_behavior_label)
+        self.txt_lc_name.editingFinished.connect(self._rename_load_case)
+        self.txt_lc_name.textChanged.connect(lambda _: self._update_lc_behavior_label())
+        self.txt_lc_desc.editingFinished.connect(self._save_lc_meta)
+        self.txt_lc_expected.editingFinished.connect(self._save_lc_meta)
+        self.btn_add_path_row.clicked.connect(self._add_path_row)
+        self.btn_remove_path_row.clicked.connect(self._remove_last_path_row)
+        self.btn_preset_ramp.clicked.connect(self._preset_path_ramp)
+        self.btn_preset_cycle.clicked.connect(self._preset_path_cycle)
+        self.btn_preset_hold.clicked.connect(self._preset_path_ramp_hold)
+        self._rebuild_load_case_combo()
+        self._update_lc_behavior_label()
+        self.chk_show_ids.toggled.connect(self._toggle_ids)
+        self.chk_show_elem_ids.toggled.connect(self._toggle_elem_ids)
+        self.chk_show_crack_links.toggled.connect(self._toggle_crack_links)
+        self.btn_zoom_in.clicked.connect(lambda: self._zoom_step(1.25))
+        self.btn_zoom_out.clicked.connect(lambda: self._zoom_step(0.8))
+        self.btn_zoom_reset.clicked.connect(self.canvas._reset_view)
+        self.chk_show_bcs.toggled.connect(lambda on: setattr(self.canvas, 'show_bcs', on) or self.canvas.update())
+        self.chk_show_loads.toggled.connect(lambda on: setattr(self.canvas, 'show_loads', on) or self.canvas.update())
+        for sb in [self.sb_W, self.sb_H]:
+            sb.valueChanged.connect(self._on_dim_change)
+            sb.valueChanged.connect(self._on_mesh_control_changed)
+        self.sb_nx.valueChanged.connect(self._on_mesh_divisions_changed)
+        self.sb_ny.valueChanged.connect(self._on_mesh_divisions_changed)
+        self.sb_max_elem.valueChanged.connect(self._on_mesh_element_mode_changed)
+        self.sb_max_aspect.valueChanged.connect(self._on_mesh_element_mode_changed)
+        self.rb_mesh_divisions.toggled.connect(self._on_mesh_mode_toggled)
+        self.rb_mesh_elem_size.toggled.connect(self._on_mesh_mode_toggled)
+        self.chk_edge_snap.toggled.connect(self._on_dim_change)
+        self.sb_edge_snap_threshold.valueChanged.connect(self._on_dim_change)
+        self._on_dim_change()
+        self._sync_mesh_controls_from_divisions()
+        self._on_mesh_mode_toggled()
+        self._set_canvas_mode(PanelMeshCanvas.MODE_SELECT)
+        QTimer.singleShot(100, self._reposition_zoom_overlay)
+
+    def _build_canvas_panel(self):
         right = QWidget(); right.setStyleSheet(f"background:{BG_PANEL};")
         rv = QVBoxLayout(right); rv.setContentsMargins(8, 16, 16, 16); rv.setSpacing(6)
+        self.lbl_canvas_tab = QLabel("  ◉ Panel View")
+        self.lbl_canvas_tab.setStyleSheet(f"color:{C4};font-weight:bold;font-size:11px;padding-bottom:4px;")
+        rv.addWidget(self.lbl_canvas_tab)
         # Canvas header — two rows: top = hint + mode, bottom = zoom + toggles
         canvas_top = QHBoxLayout()
         canvas_top.setSpacing(8)
@@ -1630,7 +1999,20 @@ class GeometryTab(QWidget):
         canvas_controls.addStretch()
         rv.addLayout(canvas_controls)
 
-        self.canvas = PanelMeshCanvas()
+        self.lbl_canvas_view_only = QLabel("  🔒 View only — go to Geometry tab to edit")
+        self.lbl_canvas_view_only.setStyleSheet(
+            f"color:{BG_DEEP};background:{C4};font-size:10px;"
+            f"font-weight:bold;padding:2px 8px;")
+        self.lbl_canvas_view_only.setFixedHeight(22)
+        self.lbl_canvas_view_only.setVisible(False)
+        rv.addWidget(self.lbl_canvas_view_only)
+
+        # Wire crack angle to canvas rotation — must use explicit float cast
+        def _on_angle_changed(val):
+            self.canvas._crack_angle_deg = float(val)
+            self.canvas.update()
+        self.sb_crack_angle.valueChanged.connect(_on_angle_changed)
+        self.canvas._crack_angle_deg = float(self.sb_crack_angle.value())
         rv.addWidget(self.canvas, stretch=1)
 
         # Floating zoom overlay on the canvas (bottom-left corner)
@@ -1685,107 +2067,157 @@ class GeometryTab(QWidget):
         self.canvas.zoom_changed.connect(
             lambda z: self.lbl_zoom.setText(f"{int(z * 100)}%"))
 
-        root.addWidget(right, stretch=1)
+        return right
 
-        # internal state
-        self._mesh_data = None   # {nodes, tris, crack_pairs, crack_rows, W, H, nx, ny, crack_ys}
-        self._bc_nodes  = {}     # {nid: (fix_x, fix_y)}
-        self._load_nodes = {}    # {nid: (Fx, Fy)} — always == _load_cases[_current_load_case]["nodes"]
-        self._load_cases = {     # keyed by case name
-            "Default": {
-                "ts_type": "Constant",
-                "description": "",
-                "expected_application": "Applied at t=0, held constant throughout",
-                "nodes": self._load_nodes,   # share reference
-                "path_time": [],
-                "path_factors": [],
-                "active": True,
-                "scale": 1.0,
-            }
-        }
-        self._current_load_case = "Default"
-        self._selected_node = None
-        self._crack_ys      = []
-        self._rebars = []
-        # each entry: {'x1': float, 'y1': float, 'x2': float, 'y2': float,
-        #              'L_unb': float, 'Es': float, 'As': float}
-        self._hand_strokes  = []   # mirror of canvas.hand_strokes
-        self._hand_crack_ys = []   # y_mean derived from each hand stroke
-        self._hand_crack_defs = []
-        self._bg_image_path = ""
-        self._snap_messages = []
-        self._syncing_mesh_controls = False
-        self._box_selected_nodes = []
+    def set_canvas_read_only(self, on):
+        self.canvas.set_read_only(on)
+        if hasattr(self, "lbl_canvas_view_only"):
+            self.lbl_canvas_view_only.setVisible(bool(on))
 
-        # wire
-        self.btn_gen.clicked.connect(self._generate)
-        self.btn_update_mesh.clicked.connect(self._update_mesh)
-        self.btn_validate.clicked.connect(self._validate_mesh)
-        self.btn_clear_mesh.clicked.connect(self._clear_mesh)
-        self.btn_import_mesh.clicked.connect(self._import_external_mesh)
-        self.btn_upload_img.clicked.connect(self._upload_background_image)
-        self.btn_clear_img.clicked.connect(self._clear_background_image)
-        self.btn_crack_mode.toggled.connect(self._toggle_crack_mode)
-        self.txt_crack_y.editingFinished.connect(self._sync_crack_ys_from_text)
-        self.canvas.node_clicked.connect(self._on_node_clicked)
-        self.canvas.node_double_clicked.connect(self._on_node_double_clicked)
-        self.canvas.box_selection_changed.connect(self._on_box_selection_changed)
-        self.canvas.node_moved.connect(self._on_node_moved)
-        self.canvas.crack_y_added.connect(self._add_crack_y)
-        self.canvas.crack_y_removed.connect(self._remove_crack_y)
-        self.canvas.hand_strokes_changed.connect(self._on_hand_strokes_changed)
-        self.canvas.mode_exited_draw.connect(self._on_canvas_auto_select_mode)
-        self.btn_hand_draw.toggled.connect(self._toggle_hand_draw)
-        self.btn_undo_stroke.clicked.connect(self.canvas.undo_hand_stroke)
-        self.btn_clr_strokes.clicked.connect(self.canvas.clear_hand_strokes)
-        self.btn_fix_bot.clicked.connect(self._fix_bottom)
-        self.btn_roller_top.clicked.connect(self._roller_top)
-        self.btn_clr_bc.clicked.connect(self._clear_all_bc)
-        self.btn_apply_bc.clicked.connect(self._apply_bc_to_node)
-        self.btn_clear_node_bc.clicked.connect(self._clear_node_bc)
-        self.btn_rb_add.clicked.connect(self._add_rebar)
-        self.btn_rb_del.clicked.connect(self._del_rebar)
-        self.btn_rb_clr.clicked.connect(self._clr_rebars)
-        self.cmb_load_case.currentTextChanged.connect(self._on_load_case_changed)
-        self.btn_add_case.clicked.connect(self._add_load_case)
-        self.btn_remove_case.clicked.connect(self._remove_load_case)
-        self.cmb_lc_ts_type.currentTextChanged.connect(self._on_lc_ts_changed)
-        self.cmb_lc_ts_type.currentTextChanged.connect(self._update_lc_behavior_label)
-        self.txt_lc_name.editingFinished.connect(self._rename_load_case)
-        self.txt_lc_name.textChanged.connect(lambda _: self._update_lc_behavior_label())
-        self.txt_lc_desc.editingFinished.connect(self._save_lc_meta)
-        self.txt_lc_expected.editingFinished.connect(self._save_lc_meta)
-        self.btn_add_path_row.clicked.connect(self._add_path_row)
-        self.btn_remove_path_row.clicked.connect(self._remove_last_path_row)
-        self.btn_preset_ramp.clicked.connect(self._preset_path_ramp)
-        self.btn_preset_cycle.clicked.connect(self._preset_path_cycle)
-        self.btn_preset_hold.clicked.connect(self._preset_path_ramp_hold)
-        self._rebuild_load_case_combo()
-        self._update_lc_behavior_label()
-        self.chk_show_ids.toggled.connect(self._toggle_ids)
-        self.chk_show_elem_ids.toggled.connect(self._toggle_elem_ids)
-        self.chk_show_crack_links.toggled.connect(self._toggle_crack_links)
-        self.btn_zoom_in.clicked.connect(lambda: self._zoom_step(1.25))
-        self.btn_zoom_out.clicked.connect(lambda: self._zoom_step(0.8))
-        self.btn_zoom_reset.clicked.connect(self.canvas._reset_view)
-        self.chk_show_bcs.toggled.connect(lambda on: setattr(self.canvas, 'show_bcs', on) or self.canvas.update())
-        self.chk_show_loads.toggled.connect(lambda on: setattr(self.canvas, 'show_loads', on) or self.canvas.update())
-        for sb in [self.sb_W, self.sb_H]:
-            sb.valueChanged.connect(self._on_dim_change)
-            sb.valueChanged.connect(self._on_mesh_control_changed)
-        self.sb_nx.valueChanged.connect(self._on_mesh_divisions_changed)
-        self.sb_ny.valueChanged.connect(self._on_mesh_divisions_changed)
-        self.sb_max_elem.valueChanged.connect(self._on_mesh_element_mode_changed)
-        self.sb_max_aspect.valueChanged.connect(self._on_mesh_element_mode_changed)
-        self.rb_mesh_divisions.toggled.connect(self._on_mesh_mode_toggled)
-        self.rb_mesh_elem_size.toggled.connect(self._on_mesh_mode_toggled)
-        self.chk_edge_snap.toggled.connect(self._on_dim_change)
-        self.sb_edge_snap_threshold.valueChanged.connect(self._on_dim_change)
-        self._on_dim_change()
-        self._sync_mesh_controls_from_divisions()
-        self._on_mesh_mode_toggled()
+    def _rebuild_mesh(self):
+        if self._mesh_data is None:
+            return
+        self._update_mesh()
+
+    def _flash_canvas_hint(self, msg, duration_ms=2000):
+        base = (
+            "Select: click a node to assign BC / load   |   "
+            "Ctrl+wheel = zoom   |   Middle-drag = pan"
+        )
+        self.lbl_canvas_hint.setStyleSheet(f"color:{C4};font-weight:bold;")
+        self.lbl_canvas_hint.setText(msg)
+        QTimer.singleShot(duration_ms, lambda: (
+            self.lbl_canvas_hint.setStyleSheet(""),
+            self.lbl_canvas_hint.setText(base)))
+
+    def _set_mode_buttons_visible(self, crack_on=False, hand_on=False):
+        self.btn_crack_set.setVisible(crack_on)
+        self.btn_crack_cancel.setVisible(crack_on)
+        self.lbl_crack_mode_status.setVisible(crack_on)
+        self.btn_hand_set.setVisible(hand_on)
+        self.btn_hand_cancel.setVisible(hand_on)
+        self.lbl_hand_mode_status.setVisible(hand_on)
+
+    def _enter_crack_mode(self):
+        if self._hand_draw_active:
+            self._cancel_hand_draw(reason="Hand draw canceled: Crack mode activated")
+        if hasattr(self, "_main_win") and self._main_win is not None:
+            self._main_win.btn_box_select.setChecked(False)
+        self._crack_mode_snapshot = list(self._crack_ys)
+        self._crack_mode_active = True
+        self.lbl_crack_mode_status.setText(
+            "🟠 Crack Mode active — click mesh to place/remove crack rows. "
+            "Press SET to confirm or CANCEL to discard.")
+        self._set_mode_buttons_visible(crack_on=True, hand_on=self._hand_draw_active)
+        self._set_canvas_mode(PanelMeshCanvas.MODE_CRACK)
+
+    def _commit_crack_mode(self):
+        if not self._crack_mode_active:
+            return
+        self._crack_mode_snapshot = None
+        self._crack_mode_active = False
+        self._set_mode_buttons_visible(crack_on=False, hand_on=self._hand_draw_active)
+        self._rebuild_mesh()
         self._set_canvas_mode(PanelMeshCanvas.MODE_SELECT)
-        QTimer.singleShot(100, self._reposition_zoom_overlay)
+        self.btn_crack_mode.blockSignals(True)
+        self.btn_crack_mode.setChecked(False)
+        self.btn_crack_mode.blockSignals(False)
+
+    def _cancel_crack_mode(self, reason=None):
+        if not self._crack_mode_active:
+            return
+        if self._crack_mode_snapshot is not None:
+            self._crack_ys = list(self._crack_mode_snapshot)
+            self._refresh_crack_label()
+            self._update_crack_text()
+            self.canvas.set_pending_cracks(self._crack_ys, self.sb_W.value(), self.sb_H.value())
+        self._crack_mode_snapshot = None
+        self._crack_mode_active = False
+        self._set_mode_buttons_visible(crack_on=False, hand_on=self._hand_draw_active)
+        self._rebuild_mesh()
+        if reason:
+            self._flash_canvas_hint(reason)
+        self._set_canvas_mode(PanelMeshCanvas.MODE_SELECT)
+        self.btn_crack_mode.blockSignals(True)
+        self.btn_crack_mode.setChecked(False)
+        self.btn_crack_mode.blockSignals(False)
+
+    def _enter_hand_draw(self):
+        if self._crack_mode_active:
+            self._cancel_crack_mode(reason="Crack mode canceled: Hand draw activated")
+        if hasattr(self, "_main_win") and self._main_win is not None:
+            self._main_win.btn_box_select.setChecked(False)
+        self._hand_draw_snapshot = {
+            "hand_strokes": [list(s) for s in self._hand_strokes],
+            "hand_crack_ys": list(self._hand_crack_ys),
+            "hand_crack_defs": [dict(d) for d in self._hand_crack_defs],
+            "crack_ys": list(self._crack_ys),
+        }
+        self._hand_draw_active = True
+        self.lbl_hand_mode_status.setText(
+            "🟠 Hand Draw active — sketch cracks on the mesh. "
+            "Press SET to confirm or CANCEL to discard.")
+        self._set_mode_buttons_visible(crack_on=self._crack_mode_active, hand_on=True)
+        self._set_canvas_mode(PanelMeshCanvas.MODE_DRAW)
+
+    def _commit_hand_draw(self):
+        if not self._hand_draw_active:
+            return
+        self._on_hand_strokes_changed()
+        self._hand_draw_snapshot = None
+        self._hand_draw_active = False
+        self._set_mode_buttons_visible(crack_on=self._crack_mode_active, hand_on=False)
+        self._rebuild_mesh()
+        self._set_canvas_mode(PanelMeshCanvas.MODE_SELECT)
+        self.btn_hand_draw.blockSignals(True)
+        self.btn_hand_draw.setChecked(False)
+        self.btn_hand_draw.blockSignals(False)
+
+    def _cancel_hand_draw(self, reason=None):
+        if not self._hand_draw_active:
+            return
+        snapshot = self._hand_draw_snapshot or {}
+        self.canvas.blockSignals(True)
+        self.canvas.clear_hand_strokes()
+        if snapshot.get("hand_strokes"):
+            self.canvas.set_hand_strokes(snapshot.get("hand_strokes", []))
+        self.canvas.blockSignals(False)
+        self._hand_strokes = [list(s) for s in snapshot.get("hand_strokes", [])]
+        self._hand_crack_ys = list(snapshot.get("hand_crack_ys", []))
+        self._hand_crack_defs = [dict(d) for d in snapshot.get("hand_crack_defs", [])]
+        self._crack_ys = list(snapshot.get("crack_ys", []))
+        if self._hand_crack_defs:
+            ys_txt = ", ".join(
+                f"{item['y']:.3f}@{item['angle_deg']:.1f}°" for item in self._hand_crack_defs
+            )
+            self.lbl_hand_strokes.setText(
+                f"hand strokes: {len(self._hand_strokes)}  |  snapped rows: {ys_txt}")
+        else:
+            self.lbl_hand_strokes.setText(f"hand strokes: {len(self._hand_strokes)}")
+        self._refresh_crack_label()
+        self._update_crack_text()
+        self.canvas.set_pending_cracks(self._crack_ys, self.sb_W.value(), self.sb_H.value())
+        self._hand_draw_snapshot = None
+        self._hand_draw_active = False
+        self._set_mode_buttons_visible(crack_on=self._crack_mode_active, hand_on=False)
+        self._rebuild_mesh()
+        if reason:
+            self._flash_canvas_hint(reason)
+        self._set_canvas_mode(PanelMeshCanvas.MODE_SELECT)
+        self.btn_hand_draw.blockSignals(True)
+        self.btn_hand_draw.setChecked(False)
+        self.btn_hand_draw.blockSignals(False)
+
+    def set_box_select_active(self, on):
+        if on:
+            if self._crack_mode_active:
+                self._cancel_crack_mode(reason="Crack mode canceled: Box select activated")
+            if self._hand_draw_active:
+                self._cancel_hand_draw(reason="Hand draw canceled: Box select activated")
+            self._set_canvas_mode(PanelMeshCanvas.MODE_BOX)
+        else:
+            if not self.btn_crack_mode.isChecked() and not self.btn_hand_draw.isChecked():
+                self._set_canvas_mode(PanelMeshCanvas.MODE_SELECT)
 
     # ─ handlers for geometry and mesh control changes, crack spec updates, and background image management
     def _on_dim_change(self):
@@ -1922,20 +2354,13 @@ class GeometryTab(QWidget):
         )
 
     def _toggle_crack_mode(self, on):
-        box_on = False
-        if hasattr(self, '_main_win') and self._main_win is not None:
-            self._main_win.btn_box_select.setChecked(False)
-            box_on = self._main_win.btn_box_select.isChecked()
         if on:
-            self._set_canvas_mode(PanelMeshCanvas.MODE_CRACK)
-        elif not self.btn_hand_draw.isChecked() and not box_on:
-            self._set_canvas_mode(PanelMeshCanvas.MODE_SELECT)
+            self._enter_crack_mode()
+        else:
+            self._cancel_crack_mode()
 
     def _toggle_box_mode(self, on):
-        if on:
-            self._set_canvas_mode(PanelMeshCanvas.MODE_BOX)
-        elif not self.btn_hand_draw.isChecked() and not self.btn_crack_mode.isChecked():
-            self._set_canvas_mode(PanelMeshCanvas.MODE_SELECT)
+        self.set_box_select_active(on)
 
     def _on_canvas_auto_select_mode(self):
         """Called when canvas auto-exits draw mode after a stroke."""
@@ -1962,12 +2387,32 @@ class GeometryTab(QWidget):
         self._refresh_crack_label()
         self.canvas.set_pending_cracks(self._crack_ys, self.sb_W.value(), self.sb_H.value())
         self._update_crack_text()
+        self.canvas._last_crack_y = y
+        self.canvas._last_crack_y_remove = None
+        self.canvas.update()
+        QTimer.singleShot(800, lambda: setattr(
+            self.canvas, '_last_crack_y', None) or self.canvas.update())
+        H = self.sb_H.value()
+        if abs(y) < 0.05 * H or abs(y - H) < 0.05 * H:
+            self.lbl_canvas_hint.setStyleSheet(f"color:{C4};font-weight:bold;")
+            self.lbl_canvas_hint.setText(
+                f"Crack snapped to edge at y={y:.3f} m — edge crack registered")
+            QTimer.singleShot(2000, lambda: (
+                self.lbl_canvas_hint.setStyleSheet(""),
+                self.lbl_canvas_hint.setText(
+                    "Crack mode: left-click to place/remove crack  |  "
+                    "Right-drag to rotate angle")))
 
     def _remove_crack_y(self, y):
         self._crack_ys = [yc for yc in self._crack_ys if abs(yc - y) > 0.01 * self.sb_H.value()]
         self._refresh_crack_label()
         self.canvas.set_pending_cracks(self._crack_ys, self.sb_W.value(), self.sb_H.value())
         self._update_crack_text()
+        self.canvas._last_crack_y_remove = y
+        self.canvas._last_crack_y = None
+        self.canvas.update()
+        QTimer.singleShot(800, lambda: setattr(
+            self.canvas, '_last_crack_y_remove', None) or self.canvas.update())
 
     def _sync_crack_ys_from_text(self):
         """
@@ -2111,35 +2556,34 @@ class GeometryTab(QWidget):
 
     # hand-draw handlers
     def _toggle_hand_draw(self, on):
-        box_on = False
-        if hasattr(self, '_main_win') and self._main_win is not None:
-            self._main_win.btn_box_select.setChecked(False)
-            box_on = self._main_win.btn_box_select.isChecked()
         if on:
-            self._set_canvas_mode(PanelMeshCanvas.MODE_DRAW)
-        elif not self.btn_crack_mode.isChecked() and not box_on:
-            self._set_canvas_mode(PanelMeshCanvas.MODE_SELECT)
+            self._enter_hand_draw()
+        else:
+            self._cancel_hand_draw()
 
     def _set_canvas_mode(self, mode):
         self.canvas.set_mode(mode)
         self.btn_crack_mode.blockSignals(True)
         self.btn_hand_draw.blockSignals(True)
-        if hasattr(self, 'btn_box_select'):
-            self.btn_box_select.blockSignals(True)
+        if hasattr(self, '_main_win') and self._main_win is not None:
+            self._main_win.btn_box_select.blockSignals(True)
         self.btn_crack_mode.setChecked(mode == PanelMeshCanvas.MODE_CRACK)
         self.btn_hand_draw.setChecked(mode == PanelMeshCanvas.MODE_DRAW)
-        if hasattr(self, 'btn_box_select'):
-            self.btn_box_select.setChecked(mode == PanelMeshCanvas.MODE_BOX)
+        if hasattr(self, '_main_win') and self._main_win is not None:
+            self._main_win.btn_box_select.setChecked(mode == PanelMeshCanvas.MODE_BOX)
         self.btn_crack_mode.blockSignals(False)
         self.btn_hand_draw.blockSignals(False)
-        if hasattr(self, 'btn_box_select'):
-            self.btn_box_select.blockSignals(False)
+        if hasattr(self, '_main_win') and self._main_win is not None:
+            self._main_win.btn_box_select.blockSignals(False)
         if mode == PanelMeshCanvas.MODE_DRAW:
             self.lbl_canvas_mode.setText("Mode: ✏ Draw (drag to sketch crack)")
-            self.lbl_canvas_hint.setText("Draw mode: drag to trace a crack; click Draw Crack again to return to Select.")
+            self.lbl_canvas_hint.setText(
+                "Draw mode: sketch cracks; press Set to confirm or Cancel to discard.")
         elif mode == PanelMeshCanvas.MODE_CRACK:
             self.lbl_canvas_mode.setText("Mode: ➕ Crack (click to place/remove)")
-            self.lbl_canvas_hint.setText("Crack mode: click canvas to add/remove crack line.")
+            self.lbl_canvas_hint.setText(
+                "Crack mode: click to place/remove crack rows  |  "
+                "Right-drag to rotate angle")
         elif mode == PanelMeshCanvas.MODE_BOX:
             self.lbl_canvas_mode.setText("Mode: ▭ Box Select (drag to select nodes)")
             self.lbl_canvas_hint.setText("Box mode: drag a rectangle to select multiple nodes for bulk BC/load operations.")
@@ -3668,7 +4112,7 @@ class CrackMaterialTab(QWidget):
         scroll.setFrameShape(QFrame.NoFrame)
 
         content = QWidget()
-        content.setMinimumWidth(480)
+        content.setMinimumWidth(520)
         outer = QVBoxLayout(content)
         outer.setContentsMargins(16, 16, 16, 12)
         outer.setSpacing(10)
@@ -3678,24 +4122,26 @@ class CrackMaterialTab(QWidget):
             "Each crack interface element can be edited independently.\n"
             "Select table rows to highlight them on the mesh canvas.", "sub"))
 
-        ctrl = QHBoxLayout()
-        self.btn_refresh = QPushButton("Refresh from Geometry")
-        self.btn_refresh.setObjectName("amber")
-        self.btn_apply_sel = QPushButton("Apply to Selected")
-        self.btn_apply_sel.setObjectName("flat")
-        self.btn_apply_all = QPushButton("Apply Material to All")
-        self.btn_apply_all.setObjectName("flat")
-        self.btn_select_all = QPushButton("Select All")
-        self.btn_select_all.setObjectName("flat")
-        self.btn_reset_default = QPushButton("Reset to Default")
-        self.btn_reset_default.setObjectName("flat")
-        ctrl.addWidget(self.btn_refresh)
-        ctrl.addWidget(self.btn_apply_sel)
-        ctrl.addWidget(self.btn_apply_all)
-        ctrl.addWidget(self.btn_select_all)
-        ctrl.addWidget(self.btn_reset_default)
-        ctrl.addStretch()
-        outer.addLayout(ctrl)
+        ctrl_row1 = QHBoxLayout(); ctrl_row1.setSpacing(6)
+        self.btn_refresh = QPushButton("↺ Refresh from Geometry")
+        self.btn_refresh.setObjectName("amber"); self.btn_refresh.setMinimumHeight(34)
+        ctrl_row1.addWidget(self.btn_refresh); ctrl_row1.addStretch()
+        outer.addLayout(ctrl_row1)
+
+        self.btn_apply_sel     = QPushButton("✔ Apply to Selected"); self.btn_apply_sel.setObjectName("flat")
+        self.btn_apply_all     = QPushButton("✔ Apply to All");      self.btn_apply_all.setObjectName("flat")
+        self.btn_select_all    = QPushButton("☑ Select All");        self.btn_select_all.setObjectName("flat")
+        self.btn_reset_default = QPushButton("↩ Reset Default");     self.btn_reset_default.setObjectName("flat")
+        self.btn_apply_sel.setMinimumWidth(155);  self.btn_apply_sel.setMinimumHeight(34)
+        self.btn_apply_all.setMinimumWidth(130);  self.btn_apply_all.setMinimumHeight(34)
+        self.btn_select_all.setMinimumWidth(115); self.btn_select_all.setMinimumHeight(34)
+        self.btn_reset_default.setMinimumWidth(130); self.btn_reset_default.setMinimumHeight(34)
+        ctrl_row2a = QHBoxLayout(); ctrl_row2a.setSpacing(6)
+        ctrl_row2a.addWidget(self.btn_apply_sel); ctrl_row2a.addWidget(self.btn_apply_all)
+        ctrl_row2a.addStretch(); outer.addLayout(ctrl_row2a)
+        ctrl_row2b = QHBoxLayout(); ctrl_row2b.setSpacing(6)
+        ctrl_row2b.addWidget(self.btn_select_all); ctrl_row2b.addWidget(self.btn_reset_default)
+        ctrl_row2b.addStretch(); outer.addLayout(ctrl_row2b)
 
         _IN = "#1d2f45"
         _BD = "#4d8fcc"
@@ -5199,20 +5645,31 @@ class RunTab(QWidget):
         wf.addRow("Status:", self.lbl_detect)
         outer.addWidget(grp_wsl)
 
-        brow = QHBoxLayout()
         self.btn_run   = QPushButton("▶  Run Analysis")
-        self.btn_run.setObjectName("success"); self.btn_run.setMinimumHeight(40)
-        self.btn_auto_detect = QPushButton("Auto-Detect")
+        self.btn_run.setObjectName("success")
+        self.btn_run.setMinimumHeight(44); self.btn_run.setMinimumWidth(160)
+        self.btn_auto_detect = QPushButton("🔍 Auto-Detect Backend")
         self.btn_auto_detect.setObjectName("flat")
-        self.btn_validate_build = QPushButton("✓ Validate OpenSees Build")
+        self.btn_auto_detect.setMinimumHeight(40); self.btn_auto_detect.setMinimumWidth(180)
+        self.btn_validate_build = QPushButton("✓ Validate OpenSeesPy Build")
         self.btn_validate_build.setObjectName("flat")
+        self.btn_validate_build.setMinimumHeight(36); self.btn_validate_build.setMinimumWidth(200)
         self.btn_validate_build.setToolTip("Check if OpenSeesPy backend is working correctly via WSL or local Python")
         self.btn_self_test = QPushButton("🧪 Test MultiSurfCrack2D")
         self.btn_self_test.setObjectName("flat")
+        self.btn_self_test.setMinimumHeight(36); self.btn_self_test.setMinimumWidth(190)
         self.btn_self_test.setToolTip("Test if MultiSurfCrack2D material is available in your OpenSees build")
-        self.btn_clear = QPushButton("Clear Console"); self.btn_clear.setObjectName("flat")
-        brow.addWidget(self.btn_run); brow.addWidget(self.btn_auto_detect); brow.addWidget(self.btn_validate_build); brow.addWidget(self.btn_self_test); brow.addWidget(self.btn_clear); brow.addStretch()
-        outer.addLayout(brow)
+        self.btn_clear = QPushButton("🗑 Clear Console"); self.btn_clear.setObjectName("flat")
+        self.btn_clear.setMinimumHeight(36); self.btn_clear.setMinimumWidth(130)
+
+        run_row1 = QHBoxLayout(); run_row1.setSpacing(6)
+        run_row1.addWidget(self.btn_run); run_row1.addWidget(self.btn_auto_detect); run_row1.addStretch()
+        outer.addLayout(run_row1)
+
+        run_row2 = QHBoxLayout(); run_row2.setSpacing(6)
+        run_row2.addWidget(self.btn_validate_build); run_row2.addWidget(self.btn_self_test)
+        run_row2.addWidget(self.btn_clear); run_row2.addStretch()
+        outer.addLayout(run_row2)
 
         self.lbl_status = mk_lbl("Ready. Configure Geometry → Crack Materials → Analysis → Run.", "sub")
         outer.addWidget(self.lbl_status)
@@ -5429,24 +5886,29 @@ class ResultsTab(QWidget):
         outer = QVBoxLayout(self); outer.setContentsMargins(16, 16, 16, 16); outer.setSpacing(8)
         outer.addWidget(mk_lbl("Analysis Results", "heading"))
 
-        ctrl = QHBoxLayout()
         self.cmb_plot  = QComboBox(); self.cmb_plot.addItems(self.PLOT_OPTS)
-        self.cmb_crack = QComboBox(); self.cmb_crack.setFixedWidth(200)
-        self.sb_scale  = dsb(100., 0.1, 1e6, 1, 10., w=100, tip="Deformation scale factor for mesh plot")
-        self.btn_rp    = QPushButton("Replot");     self.btn_rp.setObjectName("flat")
-        self.btn_save  = QPushButton("Save PNG");   self.btn_save.setObjectName("flat")
-        self.btn_csv   = QPushButton("Export CSV"); self.btn_csv.setObjectName("flat")
-        self.btn_load_exp = QPushButton("Load Exp. Data"); self.btn_load_exp.setObjectName("flat")
-        self.btn_clear_exp = QPushButton("Clear Exp."); self.btn_clear_exp.setObjectName("flat")
+        self.cmb_crack = QComboBox(); self.cmb_crack.setFixedWidth(180)
+        self.sb_scale  = dsb(100., 0.1, 1e6, 1, 10., w=80, tip="Deformation scale factor for mesh plot")
+        self.btn_rp    = QPushButton("🔄 Replot");        self.btn_rp.setObjectName("flat")
+        self.btn_save  = QPushButton("💾 Save PNG");      self.btn_save.setObjectName("flat")
+        self.btn_csv   = QPushButton("📊 Export CSV");    self.btn_csv.setObjectName("flat")
+        self.btn_load_exp = QPushButton("📂 Load Exp."); self.btn_load_exp.setObjectName("flat")
+        self.btn_clear_exp = QPushButton("✕ Clear Exp."); self.btn_clear_exp.setObjectName("flat")
         self.btn_clear_exp.setEnabled(False)
+
+        ctrl_row1 = QHBoxLayout(); ctrl_row1.setSpacing(8)
+        self.cmb_plot.setMinimumWidth(220)
         for w in [mk_lbl("Plot:"), self.cmb_plot,
                   mk_lbl("  Crack:"), self.cmb_crack,
-                  mk_lbl("  Scale ×"), self.sb_scale,
-                  self.btn_rp, self.btn_save, self.btn_csv,
-                  self.btn_load_exp, self.btn_clear_exp]:
-            ctrl.addWidget(w)
-        ctrl.addStretch()
-        outer.addLayout(ctrl)
+                  mk_lbl("  Scale ×"), self.sb_scale]:
+            ctrl_row1.addWidget(w)
+        ctrl_row1.addStretch(); outer.addLayout(ctrl_row1)
+
+        ctrl_row2 = QHBoxLayout(); ctrl_row2.setSpacing(6)
+        for btn in [self.btn_rp, self.btn_save, self.btn_csv,
+                    self.btn_load_exp, self.btn_clear_exp]:
+            btn.setMinimumHeight(36); btn.setMinimumWidth(130); ctrl_row2.addWidget(btn)
+        ctrl_row2.addStretch(); outer.addLayout(ctrl_row2)
 
         # Overlay-mode controls (hidden unless "Crack Behavior Overlay") 
         self._overlay_ctrl = QWidget()
@@ -7078,7 +7540,8 @@ class MainWindow(QMainWindow):
         Set up widget state, defaults, and signal wiring for this section.
         """
         super().__init__()
-        self.setMinimumSize(1300, 860)
+        self.setMinimumSize(1500, 900)
+        self.resize(1560, 960)
         self.RUNS_DIR = str(Path.home() / "panel_analysis_runs")
         self._worker  = None
         self._is_windows = sys.platform.startswith("win")
@@ -7109,18 +7572,17 @@ class MainWindow(QMainWindow):
         self.btn_box_select = QPushButton("⬚  Box Select")
         self.btn_box_select.setObjectName("flat")
         self.btn_box_select.setCheckable(True)
-        self.btn_box_select.setMinimumHeight(28)
+        self.btn_box_select.setFixedSize(120, 34)
         self.btn_box_select.setToolTip("Toggle box-selection mode: drag to select multiple nodes")
         self.btn_box_select.setStyleSheet(
             f"QPushButton{{background:{BG_CARD};color:{C1};"
-            f"border:1px solid {C1};border-radius:5px;"
-            f"padding:4px 12px;font-size:12px;font-weight:bold;min-height:28px;}}"
-            f"QPushButton:checked{{background:{C1};color:{BG_DEEP};}}"
-            f"QPushButton:hover{{background:{BG_PANEL};border-color:{C1};}}")
+            f"border:2px solid {C1};border-radius:6px;"
+            f"padding:4px 12px;font-size:12px;font-weight:bold;min-height:34px;}}"
+            f"QPushButton:checked{{background:{C1};color:{BG_DEEP};border-color:{C1};}}"
+            f"QPushButton:hover{{background:{BG_PANEL};border-color:{C1};color:{C1};}}")
         hl.addWidget(self.lbl_title)
         hl.addWidget(self.lbl_subtitle)
         hl.addStretch()
-        hl.addWidget(self.btn_theme)
         hl.addWidget(self.btn_box_select)
         hl.addSpacing(12)
         hl.addWidget(self.lbl_wsl)
@@ -7129,7 +7591,6 @@ class MainWindow(QMainWindow):
         #  quick-actions toolbar
         self.qa = QWidget()
         self.qa.setStyleSheet(f"background:{BG_CARD};border-bottom:1px solid {BORDER};")
-        qal = QHBoxLayout(self.qa); qal.setContentsMargins(16, 7, 16, 7); qal.setSpacing(8)
 
         self.btn_run = QPushButton("▶  Run Analysis")
         self.btn_run.setMinimumHeight(36)
@@ -7164,29 +7625,57 @@ class MainWindow(QMainWindow):
 
         self.btn_gen_script_now = QPushButton("📋 Generate Script")
         self.btn_gen_script_now.setObjectName("flat")
-        self.btn_gen_script_now.setMinimumWidth(130)
+        self.btn_gen_script_now.setMinimumWidth(115)
         self.btn_gen_script_now.setToolTip(
             "Export a standalone OpenSeesPy script now (no need to run analysis first).")
 
         self.btn_example = QPushButton("📂 Calvi Panel")
         self.btn_example.setObjectName("flat")
-        self.btn_example.setMinimumWidth(110)
+        self.btn_example.setMinimumWidth(90)
         self.btn_example.setToolTip(
             "Load the Calvi 2015 cracked panel example: single horizontal crack, "
             "unbonded reinforcement, 1.0x2.0 m panel.")
 
         self.btn_quick_geo = QPushButton("⚙ Quick Geometry")
         self.btn_quick_geo.setObjectName("flat")
-        self.btn_quick_geo.setMinimumWidth(130)
+        self.btn_quick_geo.setMinimumWidth(110)
         self.btn_quick_geo.setToolTip(
             "Open a floating popup to change panel size, mesh density, or crack positions\n"
             "without leaving the current tab.")
 
+        self.btn_run.setMinimumHeight(42); self.btn_run.setMinimumWidth(160)
+        self.btn_refresh_cracks.setMinimumHeight(38); self.btn_refresh_cracks.setMinimumWidth(155)
+        for btn in [self.btn_gen_script, self.btn_gen_script_now, self.btn_save_png, self.btn_csv]:
+            btn.setMinimumHeight(36); btn.setMinimumWidth(140)
+        self.btn_example.setFixedSize(140, 36)
+        self.btn_quick_geo.setFixedSize(155, 36)
+        self.btn_theme.setFixedSize(150, 36)
+        self.btn_example.setStyleSheet(
+            f"QPushButton{{background:{BG_CARD};color:#4ec9b0;border:1px solid #4ec9b0;"
+            f"border-radius:5px;padding:7px 14px;font-size:12px;font-weight:bold;min-height:36px;}}"
+            f"QPushButton:hover{{background:#4ec9b0;color:{BG_DEEP};}}")
+        self.btn_quick_geo.setStyleSheet(
+            f"QPushButton{{background:{BG_CARD};color:#c586c0;border:1px solid #c586c0;"
+            f"border-radius:5px;padding:7px 14px;font-size:12px;font-weight:bold;min-height:36px;}}"
+            f"QPushButton:hover{{background:#c586c0;color:{BG_DEEP};}}")
+
+        qal_outer = QVBoxLayout(self.qa)
+        qal_outer.setContentsMargins(16, 6, 16, 6)
+        qal_outer.setSpacing(4)
+
+        row1 = QHBoxLayout(); row1.setSpacing(8)
         for w in [self.btn_run, self.btn_refresh_cracks, self.btn_gen_script,
-                  self.btn_gen_script_now, self.btn_example, self.btn_quick_geo,
-                  self.btn_save_png, self.btn_csv]:
-            qal.addWidget(w)
-        qal.addStretch()
+                  self.btn_gen_script_now, self.btn_save_png, self.btn_csv]:
+            row1.addWidget(w)
+        row1.addStretch()
+
+        row2 = QHBoxLayout(); row2.setSpacing(8)
+        for w in [self.btn_example, self.btn_quick_geo, self.btn_theme]:
+            row2.addWidget(w)
+        row2.addStretch()
+
+        qal_outer.addLayout(row1)
+        qal_outer.addLayout(row2)
         vl.addWidget(self.qa)
 
         workflow_row = QHBoxLayout()
@@ -7202,8 +7691,12 @@ class MainWindow(QMainWindow):
         self.body = QWidget(); self.body.setStyleSheet(f"background:{BG_DEEP};")
         bl   = QVBoxLayout(self.body); bl.setContentsMargins(12, 12, 12, 12)
         self.tabs = QTabWidget()
+        self.tabs.setTabPosition(QTabWidget.North)
+        self.tabs.tabBar().setExpanding(True)
+        self.tabs.tabBar().setUsesScrollButtons(False)
 
-        self.geo  = GeometryTab()
+        self.shared_canvas = PanelMeshCanvas()
+        self.geo  = GeometryTab(shared_canvas=self.shared_canvas)
         self.geo._main_win = self
         self.crk  = CrackMaterialTab()
         self.crk.set_geo_ref(self.geo)
@@ -7244,18 +7737,33 @@ class MainWindow(QMainWindow):
         self.body.setStyleSheet(f"background:{BG_DEEP};")
 
         for name, tab in [
-            ("① Geometry",        self.geo),
-            ("② Crack Materials", self.crk),
-            ("③ Analysis",        self.anl),
-            ("④ Run",             self.run),
-            ("⑤ Results",         self.res),
-            ("⑥ Script",          self.scr),
+            ("① Geo",     self.geo),
+            ("② Cracks",  self.crk),
+            ("③ Analysis", self.anl),
+            ("④ Run",      self.run),
+            ("⑤ Results",  self.res),
+            ("⑥ Script",   self.scr),
         ]:
             self.tabs.addTab(tab, name)
 
-        bl.addWidget(self.tabs); vl.addWidget(self.body, stretch=1)
+        tab_host = QWidget()
+        tab_host.setMinimumWidth(520)
+        tab_host.setMaximumWidth(620)
+        th_layout = QVBoxLayout(tab_host)
+        th_layout.setContentsMargins(0, 0, 0, 0)
+        th_layout.addWidget(self.tabs)
+        self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter.addWidget(tab_host)
+        self.splitter.addWidget(self.geo.canvas_panel)
+        self.geo.canvas_panel.setMinimumWidth(480)
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setSizes([560, 900])
+
+        bl.addWidget(self.splitter); vl.addWidget(self.body, stretch=1)
 
         self.btn_box_select.toggled.connect(self._toggle_box_select)
+        self.tabs.currentChanged.connect(self._on_tab_changed)
 
         self.statusBar().showMessage(
             "Ready — set panel geometry, assign BCs/loads, then Run Analysis.")
@@ -7288,11 +7796,22 @@ class MainWindow(QMainWindow):
             lambda: self.anl.refresh_load_cases(self.geo.get_params().get("load_cases", {})))
 
         QTimer.singleShot(900, self.check_wsl)
+        self._on_tab_changed(self.tabs.currentIndex())
 
     #  helpers
     def _refresh_cracks(self):
         self.crk.refresh_from_geometry(self.geo)
         self.tabs.setCurrentWidget(self.crk)
+
+    def _on_tab_changed(self, _index):
+        is_geo = self.tabs.currentWidget() is self.geo
+        self.geo.set_canvas_read_only(not is_geo)
+        self.shared_canvas.set_interactive(is_geo)
+        self.btn_box_select.setEnabled(is_geo)
+        if not is_geo and self.btn_box_select.isChecked():
+            self.btn_box_select.setChecked(False)
+        tab_name = self.tabs.tabText(self.tabs.currentIndex())
+        self.geo.lbl_canvas_tab.setText(f"  ◉ Panel View  —  {tab_name}")
 
     def _assign_load_from_ana(self):
         nid = self.geo._selected_node
@@ -7309,17 +7828,7 @@ class MainWindow(QMainWindow):
         self.anl.lbl_sel_node_load = getattr(self.anl, 'lbl_sel_node_load', None)
 
     def _toggle_box_select(self, on):
-        geo = self.geo
-        if on:
-            geo.btn_crack_mode.setChecked(False)
-            geo.btn_hand_draw.setChecked(False)
-            geo.canvas.set_mode(PanelMeshCanvas.MODE_BOX)
-            geo.lbl_canvas_hint.setText(
-                "Box select: drag a rectangle to select multiple nodes.")
-        else:
-            geo.canvas.set_mode(PanelMeshCanvas.MODE_SELECT)
-            geo.lbl_canvas_hint.setText(
-                "Select mode: click a node to assign BC / load")
+        self.geo.set_box_select_active(on)
 
     def _update_theme_button_style(self):
         self.btn_theme.setStyleSheet(
@@ -7405,6 +7914,16 @@ class MainWindow(QMainWindow):
         # Restyle canvas hint and mode labels
         self.geo.lbl_canvas_hint.setStyleSheet(f"color:{TXTS};font-size:12px;")
         self.geo.lbl_canvas_mode.setStyleSheet(f"color:{C4};font-weight:bold;")
+        if hasattr(self.geo, "lbl_canvas_view_only"):
+            self.geo.lbl_canvas_view_only.setStyleSheet(
+                f"color:{BG_DEEP};background:{C4};font-size:10px;"
+                f"font-weight:bold;padding:2px 8px;")
+        mode_checked_style = (
+            f"QPushButton#flat:checked{{background:{C4};color:{BG_DEEP};"
+            f"border:1px solid {C4};}}"
+        )
+        self.geo.btn_crack_mode.setStyleSheet(mode_checked_style)
+        self.geo.btn_hand_draw.setStyleSheet(mode_checked_style)
 
         # Restyle the workflow label
         self.lbl_workflow.setStyleSheet(f"color:{TXTS};font-size:10px;")
