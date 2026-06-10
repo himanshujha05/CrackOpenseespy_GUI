@@ -384,6 +384,15 @@ def generate_panel_mesh(W, H, nx, ny, crack_ys=None, crack_specs=None,
             best_j = ny
         else:
             best_j = min(range(1, ny), key=lambda j: abs(grid_ys[j] - yc))
+        # An interface on the very bottom (j==0) or top (j==ny) boundary row has
+        # no elements on one side, so duplicating its nodes leaves dangling, zero-
+        # stiffness nodes (singular system). Treat such rows as regular rows: skip
+        # duplication and skip emitting crack_pairs for them.
+        if best_j == 0 or best_j == ny:
+            edge_y = 0.0 if best_j == 0 else H
+            snap_messages.append(
+                f"edge crack at y={edge_y:.3f} has no interface (boundary row)")
+            continue
         crack_rows.add(best_j)
         row_specs.setdefault(best_j, []).append(spec)
 
@@ -723,6 +732,11 @@ class PanelMeshCanvas(QWidget):
         if self.mode == self.MODE_SELECT:
             nid = self._node_near(px, py)
             if nid is not None:
+                # Arm node dragging; mouseMoveEvent promotes to a real drag only
+                # after the 4-px threshold, so plain clicks still select.
+                self._drag_nid = nid
+                self._dragging = False
+                self._drag_px_start = (px, py)
                 # Always add to multi-selection (no Ctrl required)
                 if not hasattr(self, '_multi_selected'):
                     self._multi_selected = set()
@@ -859,8 +873,8 @@ class PanelMeshCanvas(QWidget):
                         if x0 <= self._to_px(nx_, ny_)[0] <= x1
                         and y0 <= self._to_px(nx_, ny_)[1] <= y1]
             self._box_selected = set(selected)
-            for nid in selected:
-                self.node_clicked.emit(nid)
+            # Emit only the box-selection signal; emitting node_clicked per node
+            # would route through _on_node_clicked and clear _box_selected_nodes.
             self.box_selection_changed.emit(selected)
             self._box_start = None; self._box_end = None; self.update()
         if (self.mode == self.MODE_DRAW and event.button() == Qt.LeftButton
@@ -1258,8 +1272,7 @@ class PanelMeshCanvas(QWidget):
         if self.panel_W > 0 and self.panel_H > 0:
             self._draw_background(p)
             x0, y0 = self._to_px(0, 0); x1, y1 = self._to_px(self.panel_W, self.panel_H)
-            p.setPen(QPen(QColor(BORDER), 1.5)); p.setBrush(Qt.NoBrush)
-            p.drawRect(x0, y1, x1 - x0, y0 - y1)
+            # panel outline is drawn once below as the dashed placeholder rectangle
             p.setPen(QPen(QColor(C3), 2, Qt.DashLine))
             for yc in self._pending_crack_ys:
                 yp = self._to_px(0, yc)[1]
@@ -2043,11 +2056,12 @@ class GeometryTab(QWidget):
         zlay.setContentsMargins(4, 4, 4, 4)
         zlay.setSpacing(3)
 
+        # Themed (was hardcoded rgba dark/blue literals that ignored the theme)
         zoom_btn_style = (
-            f"QPushButton{{background:rgba(28,33,40,200);color:{TXT};"
+            f"QPushButton{{background:{BG_CARD};color:{TXT};"
             f"border:1px solid {BORDER};border-radius:4px;"
             f"font-weight:bold;font-size:14px;padding:2px;}}"
-            f"QPushButton:hover{{background:rgba(88,166,255,180);color:#0d1117;"
+            f"QPushButton:hover{{background:{C1};color:{BG_DEEP};"
             f"border-color:{C1};}}"
         )
 
@@ -2093,9 +2107,11 @@ class GeometryTab(QWidget):
             self.lbl_canvas_view_only.setVisible(bool(on))
 
     def _rebuild_mesh(self):
+        # Use _generate() directly: _update_mesh saves/restores crack+BC state and
+        # can restore stale crack positions after a hand-draw commit/cancel.
         if self._mesh_data is None:
             return
-        self._update_mesh()
+        self._generate()
 
     def _flash_canvas_hint(self, msg, duration_ms=2000):
         base = (
@@ -2465,8 +2481,12 @@ class GeometryTab(QWidget):
                 self._generate()
 
     def _remove_crack_y(self, y):
-        self._crack_ys = [yc for yc in self._crack_ys if abs(yc - y) > 0.01 * self.sb_H.value()]
-        self._crack_angle_map.pop(round(y, 6), None)
+        tol = 0.01 * self.sb_H.value()
+        self._crack_ys = [yc for yc in self._crack_ys if abs(yc - y) > tol]
+        # Pop every angle-map entry within the same tolerance, not just the exact
+        # round(y,6) key, so a near-miss removal doesn't leak a stale locked angle.
+        for k in [mk for mk in self._crack_angle_map if abs(float(mk) - y) <= tol]:
+            self._crack_angle_map.pop(k, None)
         self._refresh_crack_label()
         self.canvas.set_pending_cracks(self._crack_ys, self.sb_W.value(), self.sb_H.value())
         self.canvas.update()
@@ -2570,18 +2590,16 @@ class GeometryTab(QWidget):
             btn_del.setFixedHeight(32)
             btn_del.setMinimumWidth(110)
             btn_del.setStyleSheet(
-                f"QPushButton{{background:transparent;color:#f78166;"
-                f"border:1px solid #f78166;border-radius:5px;"
+                f"QPushButton{{background:transparent;color:{C3};"
+                f"border:1px solid {C3};border-radius:5px;"
                 f"font-weight:bold;font-size:12px;padding:4px 10px;}}"
-                f"QPushButton:hover{{background:#f78166;color:{BG_DEEP};}}")
+                f"QPushButton:hover{{background:{C3};color:{BG_DEEP};}}")
 
             def _make_delete(crack_y):
                 def _on_del():
+                    # _remove_crack_y already updates the crack text and regenerates
+                    # the mesh (when not in crack mode); avoid a second regeneration.
                     self._remove_crack_y(float(crack_y))
-                    if not self._crack_mode_active:
-                        self._update_crack_text()
-                        if self._mesh_data is not None:
-                            self._generate()
                     self._refresh_crack_list()
                 return _on_del
             btn_del.clicked.connect(_make_delete(y))
@@ -2889,33 +2907,19 @@ class GeometryTab(QWidget):
                 "Generate a mesh first before updating.")
             return
         # Save current state
-        saved_bc    = dict(self._bc_nodes)
-        saved_load  = dict(self._load_nodes)
         saved_cracks = list(self._crack_ys)
         saved_strokes = [list(s) for s in self._hand_strokes]
         saved_hand_ys = list(self._hand_crack_ys)
-        # Re-run standard generate
+        # Re-run standard generate. _generate() already re-snaps BCs and ALL load
+        # cases to the nearest new node by coordinate, so we must NOT re-apply the
+        # old raw-ID dicts afterward (that re-keyed BCs onto whatever node now owns
+        # the stale ID).
         self._generate()
         # Restore cracks (in case generate cleared them)
         self._crack_ys = saved_cracks
         self._hand_strokes = saved_strokes
         self._hand_crack_ys = saved_hand_ys
-        # Restore BCs and loads (snap to closest new node if coords match)
         new_nodes = self._mesh_data.get("nodes", {})
-        def _snap_to_new(old_nid, old_map_source):
-            """Find a node in the new mesh whose (x,y) matches the old node."""
-            # try same ID first
-            if old_nid in new_nodes:
-                return old_nid
-            return None
-        for nid, val in saved_bc.items():
-            new_nid = _snap_to_new(nid, saved_bc)
-            if new_nid is not None:
-                self._bc_nodes[new_nid] = val
-        for nid, val in saved_load.items():
-            new_nid = _snap_to_new(nid, saved_load)
-            if new_nid is not None:
-                self._load_nodes[new_nid] = val
         self.canvas.set_bc_nodes(self._bc_nodes)
         self.canvas.set_load_nodes(self._load_nodes)
         self._update_bc_table()
@@ -2985,12 +2989,10 @@ class GeometryTab(QWidget):
                                crack_ys=self._crack_ys,
                                crack_specs=snapped_specs,
                                snap_messages=snap_messages)
-        # Preserve BCs and loads by snapping to nearest new node
+        # Preserve BCs and loads by snapping to nearest new node (by coordinate)
         self._bc_nodes = {}
-        new_case_nodes = {}
-        self._load_cases[self._current_load_case]["nodes"] = new_case_nodes
-        self._load_nodes = new_case_nodes
-        if (old_bc or old_ld) and prev_nodes:
+        any_case_nodes = any(c.get("nodes") for c in self._load_cases.values())
+        if prev_nodes and (old_bc or old_ld or any_case_nodes):
             new_nids = sorted(nodes.keys())
             new_coords = [(nodes[n][0], nodes[n][1]) for n in new_nids]
             def _find_nearest(x, y):
@@ -3007,13 +3009,22 @@ class GeometryTab(QWidget):
                     new_nid = _find_nearest(ox, oy)
                     if new_nid is not None:
                         self._bc_nodes[int(new_nid)] = bc_val
-            for nid_str, ld_val in old_ld.items():
-                nid = int(nid_str)
-                if nid in prev_nodes:
-                    ox, oy = prev_nodes[nid]
-                    new_nid = _find_nearest(ox, oy)
-                    if new_nid is not None:
-                        self._load_nodes[int(new_nid)] = ld_val
+            # Re-snap nodes for EVERY load case, not just the active one
+            for case in self._load_cases.values():
+                snapped = {}
+                for nid_str, ld_val in dict(case.get("nodes", {})).items():
+                    nid = int(nid_str)
+                    if nid in prev_nodes:
+                        ox, oy = prev_nodes[nid]
+                        new_nid = _find_nearest(ox, oy)
+                        if new_nid is not None:
+                            snapped[int(new_nid)] = ld_val
+                case["nodes"] = snapped
+            self._load_nodes = self._load_cases[self._current_load_case]["nodes"]
+        else:
+            new_case_nodes = {}
+            self._load_cases[self._current_load_case]["nodes"] = new_case_nodes
+            self._load_nodes = new_case_nodes
         self.canvas.set_mesh(nodes, tris, crack_pairs, crack_rows, W, H)
         self.canvas.set_bc_nodes(self._bc_nodes)
         self.canvas.set_load_nodes(self._load_nodes)
@@ -3394,9 +3405,15 @@ class GeometryTab(QWidget):
 
     def _apply_bc_to_node(self):
         if self._mesh_data is None: return
-        selected = list(self.canvas._multi_selected)
-        if not selected and self._selected_node is not None:
+        # Target priority: box-selected nodes, else multi-selected, else single node
+        if self._box_selected_nodes:
+            selected = list(self._box_selected_nodes)
+        elif self.canvas._multi_selected:
+            selected = list(self.canvas._multi_selected)
+        elif self._selected_node is not None:
             selected = [self._selected_node]
+        else:
+            selected = []
         fx = 1 if self.chk_fix_x.isChecked() else 0
         fy = 1 if self.chk_fix_y.isChecked() else 0
         for nid in selected:
@@ -3440,9 +3457,15 @@ class GeometryTab(QWidget):
 
     def _apply_load_to_node(self):
         if self._mesh_data is None: return
-        selected = list(self.canvas._multi_selected)
-        if not selected and self._selected_node is not None:
+        # Target priority: box-selected nodes, else multi-selected, else single node
+        if self._box_selected_nodes:
+            selected = list(self._box_selected_nodes)
+        elif self.canvas._multi_selected:
+            selected = list(self.canvas._multi_selected)
+        elif self._selected_node is not None:
             selected = [self._selected_node]
+        else:
+            selected = []
         Fx = self.sb_node_Fx.value()
         Fy = self.sb_node_Fy.value()
         for nid in selected:
@@ -3772,9 +3795,18 @@ class GeometryTab(QWidget):
             if na not in nodes:
                 errs.append(f"Crack pair above-node {na} does not exist")
 
-        # 4. If cracks defined, check pairs count > 0
-        if md.get("crack_ys") and not crack_pairs:
-            errs.append("Crack Y positions defined but no crack pairs generated.")
+        # 4. If cracks defined, check pairs count > 0. Edge cracks at y=0 or y=H
+        #    legitimately produce no interface (boundary row), so only interior
+        #    cracks are expected to generate pairs.
+        H_panel = float(md.get("H", self.sb_H.value()))
+        crack_ys = md.get("crack_ys") or []
+        interior_ys = [y for y in crack_ys if 1e-9 < float(y) < H_panel - 1e-9]
+        edge_ys = [y for y in crack_ys if not (1e-9 < float(y) < H_panel - 1e-9)]
+        if interior_ys and not crack_pairs:
+            errs.append("Interior crack Y positions defined but no crack pairs generated.")
+        if edge_ys:
+            warns.append(f"{len(edge_ys)} edge crack(s) at panel boundary have no "
+                         f"interface (boundary row, no crack pairs).")
 
         # 5. Check that below nodes connect to triangles below and above nodes above
         below_nids = {cp[0] for cp in crack_pairs}
@@ -3837,7 +3869,8 @@ class GeometryTab(QWidget):
         else:
             if not self._bc_nodes:
                 errs.append("No boundary conditions assigned (click Fix Bottom or assign manually).")
-            if not self._load_nodes:
+            if not any(case.get("nodes") for case in self._load_cases.values()
+                       if case.get("active", True)):
                 errs.append("No loads applied (click Uniform Top Load or assign manually).")
         return errs
 
@@ -4100,6 +4133,7 @@ class QuickGeoDialog(QDialog):
         if preset == "Clear all BCs":
             self.geo._bc_nodes = {}
             self.geo.canvas.set_bc_nodes(self.geo._bc_nodes)
+            self.geo._update_bc_table()
             return
         md = self.geo.get_mesh_data()
         if not md:
@@ -4120,8 +4154,9 @@ class QuickGeoDialog(QDialog):
             targets = [nid for nid in bottom
                        if abs(nodes[nid][0] - xmin) <= tol
                        or abs(nodes[nid][0] - xmax) <= tol]
-        self.geo._bc_nodes = {int(nid): [1, 1] for nid in targets}
+        self.geo._bc_nodes = {int(nid): (1, 1) for nid in targets}
         self.geo.canvas.set_bc_nodes(self.geo._bc_nodes)
+        self.geo._update_bc_table()
 
     def _on_apply(self):
         try:
@@ -4337,8 +4372,9 @@ class CrackMaterialTab(QWidget):
         ctrl_row2b.addWidget(self.btn_select_all); ctrl_row2b.addWidget(self.btn_reset_default)
         ctrl_row2b.addStretch(); outer.addLayout(ctrl_row2b)
 
-        _IN = "#1d2f45"
-        _BD = "#4d8fcc"
+        # Route through the active theme constants instead of hardcoded dark hexes
+        _IN = BG_INPUT
+        _BD = C1
         crack_font = QFont("Segoe UI", 11)
         SP_EXP = QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
@@ -4346,8 +4382,8 @@ class CrackMaterialTab(QWidget):
             f"QComboBox{{background:{_IN};color:{TXT};border:2px solid {_BD};"
             f"border-radius:4px;padding:4px 8px;min-height:28px;font-size:12px;}}"
             f"QComboBox::drop-down{{width:22px;border:none;}}"
-            f"QComboBox QAbstractItemView{{background:#1a2738;color:{TXT};"
-            f"border:1px solid {_BD};selection-background-color:#2d5a8e;}}"
+            f"QComboBox QAbstractItemView{{background:{BG_CARD};color:{TXT};"
+            f"border:1px solid {_BD};selection-background-color:{C1};}}"
         )
         spin_css = (
             f"QDoubleSpinBox,QSpinBox{{background:{_IN};color:{TXT};border:2px solid {_BD};"
@@ -4743,9 +4779,10 @@ class CrackMaterialTab(QWidget):
         tc_layout.addWidget(self.tbl, stretch=1)
         root.addWidget(self.tbl_container, stretch=1)
 
-        self.tbl.selectionModel().currentRowChanged.connect(
-            lambda current, previous: self._on_row_selected(current.row())
-        )
+        # Selection is handled solely by itemSelectionChanged -> _on_selection_changed
+        # (which populates the editor via _set_editor_values and syncs the canvas
+        # highlight). The old currentRowChanged -> _on_row_selected hookup duplicated
+        # that work with fewer fields, so it is intentionally not connected.
         self.btn_tbl_toggle.toggled.connect(self._toggle_crack_table)
 
         # Wire signals
@@ -4896,6 +4933,10 @@ class CrackMaterialTab(QWidget):
             self.grp_spring.setVisible(is_calvi)
 
     def _run_preview(self):
+        # Guard against re-entrancy: don't overwrite a still-running worker.
+        worker = getattr(self, "_preview_worker", None)
+        if worker is not None and worker.isRunning():
+            return
         vals = self._editor_values()
         amp = float(self.sb_preview_amp.value())
         cycles = int(self.sb_preview_cycles.value())
@@ -6623,11 +6664,14 @@ def _create_eppgap_macro(ops, ci, nb, na, kn, kt, gap, eta, elt_base,
     Fallback macro-element: 4 parallel shear springs (ElasticPPGap) +
     1 normal spring.  Provides nonzero initial stiffness in both directions.
     Returns list of element ids created.
+
+    Orientation convention (consistent across all crack paths):
+    local-1 = normal (crack opening), local-2 = tangent (crack slip).
     """
     base_mat = 50000 + ci * 10
     elt_ids = []
 
-    # --- 4 tangential (shear) springs with staggered gaps ---
+    # --- 4 tangential (shear) springs with staggered gaps (local-2 = tangent) ---
     spring_shares = [0.15, 0.20, 0.25, 0.40]
     gap_mults = [0.35, 0.75, 1.25, 1.80]
     yield_mults = [0.20, 0.45, 0.90, 1.50]
@@ -6643,16 +6687,16 @@ def _create_eppgap_macro(ops, ci, nb, na, kn, kt, gap, eta, elt_base,
         except Exception:
             ops.uniaxialMaterial('Elastic', tag_t, frac_kt)
         eid = elt_base + ci * 5 + k
-        ops.element('zeroLength', eid, nb, na, '-mat', tag_t, '-dir', 1,
-                    '-orient', tx, ty, 0.0, nx_, ny_, 0.0)
+        ops.element('zeroLength', eid, nb, na, '-mat', tag_t, '-dir', 2,
+                    '-orient', nx_, ny_, 0.0, tx, ty, 0.0)
         elt_ids.append(eid)
 
-    # --- 1 normal spring ---
+    # --- 1 normal spring (local-1 = normal) ---
     tag_n = base_mat + 4
     ops.uniaxialMaterial('Elastic', tag_n, kn)
     eid_n = elt_base + ci * 5 + 4
-    ops.element('zeroLength', eid_n, nb, na, '-mat', tag_n, '-dir', 2,
-                '-orient', tx, ty, 0.0, nx_, ny_, 0.0)
+    ops.element('zeroLength', eid_n, nb, na, '-mat', tag_n, '-dir', 1,
+                '-orient', nx_, ny_, 0.0, tx, ty, 0.0)
     elt_ids.append(eid_n)
     return elt_ids
 
@@ -6684,19 +6728,16 @@ def _compute_tributary_lengths(crack_pairs, panel_W):
 def _sanity_checks(p, mesh_nodes, mesh_tris, bc_nodes, load_nodes):
     warnings = []
     auto_fixes = {}
-    if not mesh_tris:
-        warnings.append("sanity fail: no triangular elements")
-    if not bc_nodes:
-        warnings.append("sanity fail: no boundary conditions assigned")
-    if not load_nodes:
-        warnings.append("sanity fail: no loads applied")
+    # Empty mesh_tris / bc_nodes / load_nodes are caught by the PRECHECK gate in
+    # run_model_2d (the single authoritative gate); not re-checked here to avoid
+    # a duplicate gate.
     n_fix_ux = sum(1 for v in bc_nodes.values() if int(v[0]) == 1)
     n_fix_uy = sum(1 for v in bc_nodes.values() if int(v[1]) == 1)
     if n_fix_ux == 0:
         warnings.append("sanity warn: no Ux restraints; rigid-body drift is possible")
     if n_fix_uy == 0:
         warnings.append("sanity warn: no Uy restraints; rigid-body drift is possible")
-    ok = len([w for w in warnings if 'FAIL' in w]) == 0
+    ok = len([w for w in warnings if 'fail' in w.lower()]) == 0
     for w in warnings:
         _log(w)
     return ok, warnings, auto_fixes
@@ -6903,8 +6944,9 @@ def run_model_2d(p):
         san_ok, san_warns, auto_fixes = _sanity_checks(
             p, mesh_nodes_raw, mesh_tris_raw, bc_nodes_raw, load_nodes_raw)
 
-        # hard-stop issues
-        fatal = [w for w in san_warns if 'FAIL' in w]
+        # hard-stop issues (PRECHECK above is the authoritative empty-input gate;
+        # this catches any FAIL-level message case-insensitively)
+        fatal = [w for w in san_warns if 'fail' in w.lower()]
         if fatal:
             raise RuntimeError("Sanity checks failed:\n" + "\n".join(fatal))
 
@@ -7060,6 +7102,7 @@ def run_model_2d(p):
                                        msc_zeta, msc_kappa, msc_theta, msc_w,
                                        msc_cPath)
                         elt_id = elt_base + ci
+                        # local-1 = normal (opening = strain[0]), local-2 = tangent (slip = strain[1]) per MultiSurfCrack2D
                         ops.element('zeroLengthND', elt_id, nb, na, mat_id,
                                     '-orient', c_nx, c_ny, 0.0, c_tx, c_ty, 0.0)
                         n_mscrack_ok += 1
@@ -7111,8 +7154,9 @@ def run_model_2d(p):
                     ops.uniaxialMaterial('Elastic', mat_n, kn)
 
                 elt_id = elt_base + ci
-                ops.element('zeroLength', elt_id, nb, na, '-mat', mat_t, mat_n, '-dir', 1, 2,
-                            '-orient', c_tx, c_ty, 0.0, c_nx, c_ny, 0.0)
+                # local-1 = normal (mat_n), local-2 = tangent (mat_t) — consistent with MSC2D convention
+                ops.element('zeroLength', elt_id, nb, na, '-mat', mat_n, mat_t, '-dir', 1, 2,
+                            '-orient', c_nx, c_ny, 0.0, c_tx, c_ty, 0.0)
 
             pair_meta.append(dict(
                 element_index=ci + 1, below_node=nb, above_node=na,
@@ -7125,8 +7169,8 @@ def run_model_2d(p):
                 openings=[], slips=[], shear_forces=[], normal_stresses=[],
             ))
 
-            _log(f"crack elements ready: {n_mscrack_ok} MSC2D, {n_fallback} EPPGap fallback, "
-                 f"{len(crack_pairs) - n_mscrack_ok - n_fallback} standard")
+        _log(f"crack elements ready: {n_mscrack_ok} MSC2D, {n_fallback} EPPGap fallback, "
+             f"{len(crack_pairs) - n_mscrack_ok - n_fallback} standard")
 
         # add reinforcement truss elements crossing selected crack rows
         rebar_definitions = list(p.get('rebar_definitions', []))
@@ -7203,6 +7247,11 @@ def run_model_2d(p):
                 nb = int(cp_sel[0])
                 na = int(cp_sel[1])
                 x_sel = float(cp_sel[3])
+                if len(cp_sel) >= 8:
+                    r_tx, r_ty = float(cp_sel[4]), float(cp_sel[5])
+                    r_nx, r_ny = float(cp_sel[6]), float(cp_sel[7])
+                else:
+                    r_tx, r_ty, r_nx, r_ny = 1.0, 0.0, 0.0, 1.0
 
                 if L_unb <= 0.0:
                     _log(
@@ -7220,10 +7269,15 @@ def run_model_2d(p):
                 rebar_elt_id = elt_base_rebar + ridx
 
                 ops.uniaxialMaterial('Steel01', rebar_mat_id, Fy_kN, k_eff, 0.01)
-                ops.element('Truss', rebar_elt_id, nb, na, 1.0, rebar_mat_id)
+                # Coincident crack-pair nodes → a Truss has L=0 (undefined ΔL/L strain).
+                # Use a zeroLength rebar spring on the crack-normal (local-1), same
+                # '-orient' convention as the crack interface element at this pair.
+                ops.element('zeroLength', rebar_elt_id, nb, na,
+                            '-mat', rebar_mat_id, '-dir', 1,
+                            '-orient', r_nx, r_ny, 0.0, r_tx, r_ty, 0.0)
                 n_rebar_created += 1
                 _log(
-                    f"Rebar truss elt={rebar_elt_id} crack_y={crack_y:.6f} x={x_sel:.6f} "
+                    f"Rebar spring elt={rebar_elt_id} crack_y={crack_y:.6f} x={x_sel:.6f} "
                     f"As={As:.3f}mm2 Es={Es:.3f}MPa fy={fy:.3f}MPa L_unb={L_unb:.4f}m "
                     f"k_eff={k_eff:.1f}kN/m"
                 )
@@ -7267,9 +7321,27 @@ def run_model_2d(p):
                 _log(f"Load case '{case_name}': {ts_type} pattern {pat_id}, "
                      f"{len(case_nodes)} nodes, scale={scale}")
                 ts_id += 1; pat_id += 1
-            # Hold constant-type patterns before cyclic application begins
+            # Bring constant-type patterns (e.g. axial pre-compression) into
+            # equilibrium BEFORE the main protocol begins, THEN hold them
+            # constant. Calling loadConst without a prior equilibrium step meant
+            # the constant loads were never actually applied.
             if has_const_pattern:
+                _log("constant-load phase: equilibrating constant patterns (10 x 0.1 LoadControl)")
+                try:
+                    _build_analysis(ops, p, 'LoadControl', 0, 1, 0.1, 'Newton',
+                                    sys_type=p.get('solver_system', 'UmfPack'),
+                                    constr_type=p.get('constraint_handler', 'Plain'))
+                    n_ok = 0
+                    for _cs in range(10):
+                        if ops.analyze(1) != 0:
+                            _log(f"constant-load phase: step {_cs + 1} did not converge; stopping early")
+                            break
+                        n_ok += 1
+                    _log(f"constant-load phase: {n_ok}/10 steps converged")
+                except Exception as _e_const:
+                    _log(f"constant-load phase: error ({_e_const})")
                 ops.loadConst('-time', 0.0)
+                _log("constant-load phase: loads held constant, pseudo-time reset to 0")
             # Build combined load_nodes for ref-DOF auto-detection below
             load_nodes = {}
             for case in load_cases.values():
@@ -7319,10 +7391,12 @@ def run_model_2d(p):
             _log(f"[CONTROL] user-specified ref_nid={ref_nid} ref_dof={ref_dof}")
 
         if at == 'LoadControl':
-            for nid_str, (Fx, Fy) in load_nodes.items():
-                ref_nid = int(nid_str)
-                ref_dof = 2 if abs(Fy) > abs(Fx) else 1
-                break
+            # only auto-pick a ref node/DOF when the user didn't specify one above
+            if p.get('ref_node', 0) <= 0:
+                for nid_str, (Fx, Fy) in load_nodes.items():
+                    ref_nid = int(nid_str)
+                    ref_dof = 2 if abs(Fy) > abs(Fx) else 1
+                    break
             _log(f"control mode: {'auto-switched ' if at_auto_switched else ''}"
                  f"ref_nid={ref_nid}  ref_dof={ref_dof}  analysis=LoadControl")
 
@@ -7342,9 +7416,10 @@ def run_model_2d(p):
             ops.reactions()
             tot_f = 0.
             for fnid in fixed_nids:
-                try: tot_f += abs(ops.nodeReaction(fnid, ref_dof))
+                try: tot_f += ops.nodeReaction(fnid, ref_dof)
                 except: pass
-            force_l.append(tot_f)
+            # base shear = -Σ reactions so applied-load sign matches displacement sign
+            force_l.append(-tot_f)
             for yi, yv in enumerate(crack_y_set):
                 dw_sum = ds_sum = cnt = 0
                 for meta in pair_meta:
@@ -7356,8 +7431,11 @@ def run_model_2d(p):
                             slip = dux * meta['tx'] + duy * meta['ty']
                             try:
                                 forces = ops.eleForce(meta['element_id'])
-                                shear_force = forces[0] if forces else 0.0
-                                normal_force = forces[1] if len(forces) > 1 else 0.0
+                                Fx = forces[0] if forces else 0.0
+                                Fy = forces[1] if len(forces) > 1 else 0.0
+                                # eleForce returns GLOBAL X/Y at node 1; project onto crack local axes
+                                shear_force = Fx * meta['tx'] + Fy * meta['ty']
+                                normal_force = Fx * meta['nx'] + Fy * meta['ny']
                             except Exception:
                                 shear_force = 0.0
                                 normal_force = 0.0
@@ -8789,7 +8867,10 @@ class MainWindow(QMainWindow):
         """
         p = self._params()
         import json as _j
-        py_p = _j.dumps(p, indent=2).replace(': true', ': True').replace(': false', ': False').replace(': null', ': None')
+        # Embed params as JSON parsed at runtime, NOT via text substitution of
+        # ': true'/': false'/': null' — that could corrupt user strings (e.g. a
+        # load-case description containing ": true").
+        json_p = _j.dumps(p, indent=2)
         nt = len(p.get("mesh_tris", []))
         nc = len(p.get("mesh_crack_pairs", []))
 
@@ -8820,7 +8901,7 @@ class MainWindow(QMainWindow):
             f'else:\n'
             f'    # Fallback: embedded parameters (for direct execution)\n'
             f'    RESULTS_FILE = "results.npz"\n'
-            f'    PARAMS = {py_p}\n'
+            f"    PARAMS = json.loads(r'''{json_p}''')\n"
             f'\n'
             f'# ────────────────────────────────────────────────────────────\n'
             f'# Runner implementation: call this after defining PARAMS above\n'
