@@ -76,6 +76,17 @@ TXT      = "#e6edf3"
 TXTS     = "#b8c2cf"
 CRACK_BELOW = "#ff8c42"   # orange  — node on the BELOW side of a crack
 CRACK_ABOVE = "#c084fc"   # violet  — node on the ABOVE side of a crack
+# Semantic role colors (set by _apply_theme; defaults = dark theme)
+ACCENT_TEAL = "#4ec9b0"; ACCENT_PURPLE = "#c586c0"
+BTN_HOVER_BLUE = "#79b8ff"; BTN_PRESS_BLUE = "#388bfd"
+BTN_HOVER_RED = "#ff7b72"; BTN_HOVER_GREEN = "#56d364"; BTN_HOVER_AMBER = "#e5c07b"
+BTN_TXT = "#0d1117"
+COMMIT_GREEN = "#1a7a1a"; COMMIT_RED = "#7a1a1a"
+CANVAS_CYAN = "#00bcd4"; CANVAS_INTERFACE = "#ff6b35"; CANVAS_HIGHLIGHT = "#ffd54f"
+CANVAS_BOXSEL = "#00ffff"; CANVAS_STROKE = "#ff4444"; CANVAS_STROKE_LIVE = "#ff8888"
+CONSOLE_TXT = "#b5cfe9"
+INPUT_HL_BG = "#1d2f45"; INPUT_HL_BORDER = "#4d8fcc"
+RESULT_OVL1 = "#ff7043"; RESULT_OVL2 = "#ab47bc"; EXP_DATA = "#f0883e"
 
 # ── Theme system ─────────────────────────────────────────────
 THEMES = {
@@ -85,16 +96,91 @@ THEMES = {
                 "C1": "#58a6ff", "C2": "#3fb950", "C3": "#f78166", "C4": "#d2a679",
                 "TXT": "#e6edf3", "TXTS": "#b8c2cf",
                 "CRACK_BELOW": "#ff8c42", "CRACK_ABOVE": "#c084fc",
+                "ACCENT_TEAL": "#4ec9b0", "ACCENT_PURPLE": "#c586c0",
+                "BTN_HOVER_BLUE": "#79b8ff", "BTN_PRESS_BLUE": "#388bfd",
+                "BTN_HOVER_RED": "#ff7b72", "BTN_HOVER_GREEN": "#56d364",
+                "BTN_HOVER_AMBER": "#e5c07b", "BTN_TXT": "#0d1117",
+                "COMMIT_GREEN": "#1a7a1a", "COMMIT_RED": "#7a1a1a",
+                "CANVAS_CYAN": "#00bcd4", "CANVAS_INTERFACE": "#ff6b35",
+                "CANVAS_HIGHLIGHT": "#ffd54f", "CANVAS_BOXSEL": "#00ffff",
+                "CANVAS_STROKE": "#ff4444", "CANVAS_STROKE_LIVE": "#ff8888",
+                "CONSOLE_TXT": "#b5cfe9",
+                "INPUT_HL_BG": "#1d2f45", "INPUT_HL_BORDER": "#4d8fcc",
+                "RESULT_OVL1": "#ff7043", "RESULT_OVL2": "#ab47bc", "EXP_DATA": "#f0883e",
         },
         "light": {
                 "BG_DEEP": "#f5f5f5", "BG_PANEL": "#ffffff", "BG_CARD": "#e8ecf0",
                 "BG_INPUT": "#ffffff", "BORDER": "#c0c8d0",
-                "C1": "#0366d6", "C2": "#28a745", "C3": "#d73a49", "C4": "#b08030",
+                "C1": "#0366d6", "C2": "#28a745", "C3": "#d73a49", "C4": "#8a6420",
                 "TXT": "#1a1a1a", "TXTS": "#555555",
                 "CRACK_BELOW": "#e65100", "CRACK_ABOVE": "#7b1fa2",
+                "ACCENT_TEAL": "#00796b", "ACCENT_PURPLE": "#8e24aa",
+                "BTN_HOVER_BLUE": "#4d94e8", "BTN_PRESS_BLUE": "#0353b4",
+                "BTN_HOVER_RED": "#c62828", "BTN_HOVER_GREEN": "#1e7e34",
+                "BTN_HOVER_AMBER": "#9a7b2d", "BTN_TXT": "#0d1117",
+                "COMMIT_GREEN": "#2e7d32", "COMMIT_RED": "#c62828",
+                "CANVAS_CYAN": "#00838f", "CANVAS_INTERFACE": "#d84315",
+                "CANVAS_HIGHLIGHT": "#f9a825", "CANVAS_BOXSEL": "#00838f",
+                "CANVAS_STROKE": "#c62828", "CANVAS_STROKE_LIVE": "#e57373",
+                "CONSOLE_TXT": "#2c3e50",
+                "INPUT_HL_BG": "#e3f0fc", "INPUT_HL_BORDER": "#2d7dd2",
+                "RESULT_OVL1": "#d84315", "RESULT_OVL2": "#8e24aa", "EXP_DATA": "#e65100",
         },
 }
 CURRENT_THEME = "dark"
+
+# ── Theme restyle registry ───────────────────────────────────
+# Widgets created with theme-dependent setStyleSheet capture the color globals at
+# construction time. Register a closure here (via themed() or register_restyle())
+# so _toggle_theme() can re-run them after _apply_theme() swaps the globals.
+_RESTYLE_FUNCS = []
+
+def register_restyle(fn):
+        """Register a no-arg closure to be re-invoked on every theme change."""
+        _RESTYLE_FUNCS.append(fn)
+        return fn
+
+def run_restyles():
+        """Re-apply every registered theme-dependent style (post _apply_theme)."""
+        for fn in list(_RESTYLE_FUNCS):
+                try:
+                        fn()
+                except Exception:
+                        pass
+
+def themed(widget, style_fn):
+        """Apply a theme-dependent stylesheet now and re-apply on theme change.
+
+        style_fn() must return a QSS string built from the current color globals
+        (read at call time, not captured), so re-running it after _apply_theme()
+        yields the new theme's colors.
+        """
+        def _restyle():
+                widget.setStyleSheet(style_fn())
+        _restyle()
+        register_restyle(_restyle)
+        return widget
+
+def restyle_axes(fig, ax):
+        """Apply current theme colors to a matplotlib fig/ax (incl. legend)."""
+        if fig is not None:
+                fig.set_facecolor(BG_DEEP)
+        if ax is not None:
+                ax.set_facecolor(BG_PANEL)
+                ax.tick_params(colors=TXTS, labelsize=9)
+                ax.xaxis.label.set_color(TXT)
+                ax.yaxis.label.set_color(TXT)
+                if ax.title is not None:
+                        ax.title.set_color(C1)
+                for s in ax.spines.values():
+                        s.set_edgecolor(BORDER)
+                ax.grid(True, alpha=0.15, color=BORDER, linestyle="--")
+                leg = ax.get_legend()
+                if leg is not None:
+                        leg.get_frame().set_facecolor(BG_CARD)
+                        leg.get_frame().set_edgecolor(BORDER)
+                        for txt in leg.get_texts():
+                                txt.set_color(TXT)
 
 
 def _build_style(theme_name):
@@ -103,7 +189,7 @@ def _build_style(theme_name):
         return f"""
 QMainWindow,QDialog{{background:{t['BG_DEEP']};}}
 QWidget{{background:{t['BG_DEEP']};color:{t['TXT']};
-    font-family:'Segoe UI','Cascadia Code','Consolas',sans-serif;font-size:13px;}}
+    font-family:'Segoe UI','Segoe UI Symbol','Cascadia Code','Consolas',sans-serif;font-size:13px;}}
 QScrollArea,QScrollArea>QWidget,QScrollArea>QWidget>QWidget{{background:{t['BG_DEEP']};}}
 QTabWidget::pane{{border:1px solid {t['BORDER']};background:{t['BG_PANEL']};border-radius:0 4px 4px 4px;}}
 QTabBar::tab{{background:{t['BG_DEEP']};color:{t['TXTS']};padding:8px 12px;
@@ -124,30 +210,30 @@ QComboBox{{padding-right:30px;}}
 QComboBox QAbstractItemView{{background:{t['BG_CARD']};border:1px solid {t['BORDER']};
     selection-background-color:{t['C1']};color:{t['TXT']};}}
 QComboBox::drop-down{{border:none;width:22px;}}
-QPushButton{{background:{t['C1']};color:{t['BG_DEEP']};border-radius:5px;padding:8px 20px;
-        font-weight:bold;font-size:13px;border:1px solid transparent;min-height:38px;}}
-QPushButton:hover{{background:#79b8ff;}}
-QPushButton:pressed{{background:#388bfd;}}
+QPushButton{{background:{t['C1']};color:{t['BTN_TXT']};border-radius:5px;padding:8px 20px;
+        font-weight:bold;font-size:13px;border:1px solid transparent;min-height:34px;}}
+QPushButton:hover{{background:{t['BTN_HOVER_BLUE']};}}
+QPushButton:pressed{{background:{t['BTN_PRESS_BLUE']};}}
 QPushButton:disabled{{background:{t['BORDER']};color:{t['TXTS']};}}
-QPushButton#danger{{background:{t['C3']};color:{t['BG_DEEP']};}}
-QPushButton#danger:hover{{background:#ff7b72;}}
-QPushButton#success{{background:{t['C2']};color:{t['BG_DEEP']};font-size:13px;font-weight:bold;}}
-QPushButton#success:hover{{background:#56d364;}}
+QPushButton#danger{{background:{t['C3']};color:{t['BTN_TXT']};}}
+QPushButton#danger:hover{{background:{t['BTN_HOVER_RED']};}}
+QPushButton#success{{background:{t['C2']};color:{t['BTN_TXT']};font-size:13px;font-weight:bold;}}
+QPushButton#success:hover{{background:{t['BTN_HOVER_GREEN']};}}
 QPushButton#success:disabled{{background:{t['BORDER']};color:{t['TXTS']};}}
-QPushButton#flat{{background:{t['BG_CARD']};color:{t['TXT']};border:1px solid {t['TXTS']};border-radius:5px;padding:7px 14px;font-size:12px;font-weight:bold;min-height:36px;}}
+QPushButton#flat{{background:{t['BG_CARD']};color:{t['TXT']};border:1px solid {t['TXTS']};border-radius:5px;padding:7px 14px;font-size:12px;font-weight:bold;min-height:34px;}}
 QPushButton#flat:hover{{background:{t['BG_PANEL']};color:{t['TXT']};border-color:{t['C1']};}}
 QPushButton#flat:disabled{{background:{t['BG_DEEP']};color:{t['BORDER']};border-color:{t['BORDER']};}}
-QPushButton#amber{{background:{t['C4']};color:{t['BG_DEEP']};font-weight:bold;}}
-QPushButton#amber:hover{{background:#e5c07b;}}
-QPushButton#warn{{background:{t['C4']};color:{t['BG_DEEP']};font-weight:bold;font-size:13px;min-height:36px;border-radius:5px;padding:7px 16px;}}
-QPushButton#warn:hover{{background:#e5c07b;}}
+QPushButton#amber{{background:{t['C4']};color:{t['BTN_TXT']};font-weight:bold;}}
+QPushButton#amber:hover{{background:{t['BTN_HOVER_AMBER']};}}
+QPushButton#warn{{background:{t['C4']};color:{t['BTN_TXT']};font-weight:bold;font-size:13px;min-height:34px;border-radius:5px;padding:7px 16px;}}
+QPushButton#warn:hover{{background:{t['BTN_HOVER_AMBER']};}}
 QTableWidget{{background:{t['BG_INPUT']};gridline-color:{t['BORDER']};
     border:1px solid {t['BORDER']};border-radius:4px;color:{t['TXT']};}}
 QHeaderView::section{{background:{t['BG_CARD']};color:{t['C1']};padding:7px;
     border:none;border-right:1px solid {t['BORDER']};border-bottom:1px solid {t['BORDER']};
     font-weight:bold;font-size:11px;}}
 QTableWidget::item:selected{{background:{t['C1']};color:{t['BG_DEEP']};}}
-QTextEdit{{background:{t['BG_INPUT']};color:#b5cfe9;border:1px solid {t['BORDER']};
+QTextEdit{{background:{t['BG_INPUT']};color:{t['CONSOLE_TXT']};border:1px solid {t['BORDER']};
     border-radius:4px;font-family:'Cascadia Code','Fira Code','Consolas',monospace;font-size:12px;}}
 QScrollBar:vertical{{background:{t['BG_INPUT']};width:8px;border-radius:4px;}}
 QScrollBar::handle:vertical{{background:{t['BORDER']};border-radius:4px;min-height:20px;}}
@@ -171,6 +257,12 @@ def _apply_theme(theme_name):
         """Update the global color variables to match the selected theme."""
         global BG_DEEP, BG_PANEL, BG_CARD, BG_INPUT, BORDER
         global C1, C2, C3, C4, TXT, TXTS, CRACK_BELOW, CRACK_ABOVE
+        global ACCENT_TEAL, ACCENT_PURPLE, BTN_HOVER_BLUE, BTN_PRESS_BLUE
+        global BTN_HOVER_RED, BTN_HOVER_GREEN, BTN_HOVER_AMBER, BTN_TXT
+        global COMMIT_GREEN, COMMIT_RED
+        global CANVAS_CYAN, CANVAS_INTERFACE, CANVAS_HIGHLIGHT, CANVAS_BOXSEL
+        global CANVAS_STROKE, CANVAS_STROKE_LIVE, CONSOLE_TXT
+        global INPUT_HL_BG, INPUT_HL_BORDER, RESULT_OVL1, RESULT_OVL2, EXP_DATA
         global CURRENT_THEME
         t = THEMES[theme_name]
         BG_DEEP = t["BG_DEEP"]; BG_PANEL = t["BG_PANEL"]; BG_CARD = t["BG_CARD"]
@@ -178,10 +270,22 @@ def _apply_theme(theme_name):
         C1 = t["C1"]; C2 = t["C2"]; C3 = t["C3"]; C4 = t["C4"]
         TXT = t["TXT"]; TXTS = t["TXTS"]
         CRACK_BELOW = t["CRACK_BELOW"]; CRACK_ABOVE = t["CRACK_ABOVE"]
+        ACCENT_TEAL = t["ACCENT_TEAL"]; ACCENT_PURPLE = t["ACCENT_PURPLE"]
+        BTN_HOVER_BLUE = t["BTN_HOVER_BLUE"]; BTN_PRESS_BLUE = t["BTN_PRESS_BLUE"]
+        BTN_HOVER_RED = t["BTN_HOVER_RED"]; BTN_HOVER_GREEN = t["BTN_HOVER_GREEN"]
+        BTN_HOVER_AMBER = t["BTN_HOVER_AMBER"]; BTN_TXT = t["BTN_TXT"]
+        COMMIT_GREEN = t["COMMIT_GREEN"]; COMMIT_RED = t["COMMIT_RED"]
+        CANVAS_CYAN = t["CANVAS_CYAN"]; CANVAS_INTERFACE = t["CANVAS_INTERFACE"]
+        CANVAS_HIGHLIGHT = t["CANVAS_HIGHLIGHT"]; CANVAS_BOXSEL = t["CANVAS_BOXSEL"]
+        CANVAS_STROKE = t["CANVAS_STROKE"]; CANVAS_STROKE_LIVE = t["CANVAS_STROKE_LIVE"]
+        CONSOLE_TXT = t["CONSOLE_TXT"]
+        INPUT_HL_BG = t["INPUT_HL_BG"]; INPUT_HL_BORDER = t["INPUT_HL_BORDER"]
+        RESULT_OVL1 = t["RESULT_OVL1"]; RESULT_OVL2 = t["RESULT_OVL2"]; EXP_DATA = t["EXP_DATA"]
         CURRENT_THEME = theme_name
 
 APP_CONFIG_FILE = Path(__file__).with_name("panel_gui_config.json")
 PROJECT_FILE_VERSION = "1.0"
+_NO_NODE_HINT = "← Click a node on the canvas to select it"
 
 
 # helper functions — small utilities reused across tabs
@@ -214,7 +318,7 @@ def mk_lbl(txt, kind=""):
 
 def sep():
     f = QFrame(); f.setFrameShape(QFrame.HLine)
-    f.setStyleSheet(f"color:{BORDER};background:{BORDER};max-height:1px;")
+    themed(f, lambda: f"color:{BORDER};background:{BORDER};max-height:1px;")
     return f
 
 
@@ -227,6 +331,13 @@ class SpinboxWheelEventFilter(QObject):
                 event.ignore()
                 return True
         return False
+
+
+class _NoScrollTable(QTableWidget):
+    """QTableWidget that ignores wheel events so scrolling the parent panel
+    doesn't scroll the table rows (which can shift focus into editable cells)."""
+    def wheelEvent(self, e):
+        e.ignore()
 
 def snap_crack_y(y, H, ny, allow_edge=True):
     """
@@ -957,7 +1068,7 @@ class PanelMeshCanvas(QWidget):
         # (zero-length elements between coincident nodes are invisible as lines)
         if self.show_crack_links and self.crack_pairs:
             tick_len_px = 8
-            pen_crack = QPen(QColor("#ff6b35"), 2)
+            pen_crack = QPen(QColor(CANVAS_INTERFACE), 2)
             p.setPen(pen_crack)
             for cp in self.crack_pairs:
                 nb, na = cp[0], cp[1]
@@ -968,8 +1079,8 @@ class PanelMeshCanvas(QWidget):
                     p.drawLine(px_c - 3, py_c, px_c + 3, py_c)
 
         if self._highlighted_pairs:
-            p.setPen(QPen(QColor("#ffd54f"), 2.5))
-            p.setBrush(QBrush(QColor("#ffd54f")))
+            p.setPen(QPen(QColor(CANVAS_HIGHLIGHT), 2.5))
+            p.setBrush(QBrush(QColor(CANVAS_HIGHLIGHT)))
             for cp in self.crack_pairs:
                 pair_key = (int(cp[0]), int(cp[1]))
                 if pair_key not in self._highlighted_pairs:
@@ -984,13 +1095,13 @@ class PanelMeshCanvas(QWidget):
         # Crack pair nodes share the same coordinates; draw below (orange, larger)
         # first then above (violet, smaller) on top — result is an orange ring with
         # a violet centre, making crack pairs visually distinct at a glance.
-        p.setFont(QFont("Consolas", 7))
+        p.setFont(QFont("Consolas", 8))
         show_label = self.show_ids and len(self.nodes) <= 300
         for nid, (nx_, ny_) in self.nodes.items():
             ppx, ppy = self._to_px(nx_, ny_)
             if nid in self._multi_selected:
                 p.setBrush(QBrush(QColor(C2)))
-                p.setPen(QPen(QColor("#ffffff"), 1.5))
+                p.setPen(QPen(QColor(TXT), 1.5))
                 p.drawEllipse(ppx - 6, ppy - 6, 12, 12)
                 if nid == self.selected_node and len(self._multi_selected) > 1:
                     p.setBrush(Qt.NoBrush)
@@ -998,7 +1109,7 @@ class PanelMeshCanvas(QWidget):
                     p.drawEllipse(ppx - 10, ppy - 10, 20, 20)
                 continue   # skip the other branches for this node
             elif nid == self.selected_node:
-                p.setBrush(QBrush(QColor(C2))); p.setPen(QPen(QColor("#ffffff"), 1.5))
+                p.setBrush(QBrush(QColor(C2))); p.setPen(QPen(QColor(TXT), 1.5))
                 p.drawEllipse(ppx - 6, ppy - 6, 12, 12)
             elif nid in self.bc_nodes:
                 p.setBrush(QBrush(QColor(C4))); p.setPen(QPen(QColor(C4), 1))
@@ -1023,7 +1134,7 @@ class PanelMeshCanvas(QWidget):
 
         # Box-selected node highlight (cyan ring drawn on top of nodes)
         if self._box_selected:
-            p.setPen(QPen(QColor("#00ffff"), 2))
+            p.setPen(QPen(QColor(CANVAS_BOXSEL), 2))
             p.setBrush(Qt.NoBrush)
             for nid in self._box_selected:
                 if nid in self.nodes:
@@ -1088,7 +1199,7 @@ class PanelMeshCanvas(QWidget):
                 if total_len_m < 1e-6:
                     pass
                 else:
-                    CYAN = "#00bcd4"
+                    CYAN = CANVAS_CYAN
 
                     # ── Ruler baseline (solid gray body, drawn first) ──
                     p.setPen(QPen(QColor(TXTS), 1, Qt.SolidLine))
@@ -1133,7 +1244,7 @@ class PanelMeshCanvas(QWidget):
 
                         if is_label and 0 <= xm <= self.panel_W and 0 <= ym <= self.panel_H:
                             p.setFont(QFont("Consolas", 6))
-                            p.setPen(QPen(QColor("#00bcd4"), 1))
+                            p.setPen(QPen(QColor(CANVAS_CYAN), 1))
                             p.drawText(
                                 int(pxt - 10),
                                 int(pyt - abs(perp_sin) * (label_tick_px + 14) - 8),
@@ -1221,8 +1332,8 @@ class PanelMeshCanvas(QWidget):
         p.drawText(-18, 4, f"H={self.panel_H:.3f}"); p.restore()
 
         # Hand-drawn strokes — completed ones (solid red) + in-progress (dashed)
-        pen_stroke = QPen(QColor("#ff4444"), 3); pen_stroke.setCapStyle(Qt.RoundCap)
-        pen_cur    = QPen(QColor("#ff8888"), 2, Qt.DashLine)
+        pen_stroke = QPen(QColor(CANVAS_STROKE), 3); pen_stroke.setCapStyle(Qt.RoundCap)
+        pen_cur    = QPen(QColor(CANVAS_STROKE_LIVE), 2, Qt.DashLine)
         for stroke in self.hand_strokes:
             if len(stroke) < 2: continue
             p.setPen(pen_stroke)
@@ -1254,8 +1365,8 @@ class PanelMeshCanvas(QWidget):
             ("●", C1, "Node"), ("●", C2, "Selected"),
             ("●", C4, "Fixed BC"), ("●", C3, "Loaded"),
             ("●", CRACK_BELOW, "Crack ↓"), ("●", CRACK_ABOVE, "Crack ↑"),
-            ("╋", "#ff6b35", "Interface Elem"),
-            ("○", "#00ffff", "Box Sel"),
+            ("╋", CANVAS_INTERFACE, "Interface Elem"),
+            ("○", CANVAS_BOXSEL, "Box Sel"),
         ]
         lx_ = W - 120
         for i, (sym, col, txt) in enumerate(legend):
@@ -1346,7 +1457,7 @@ class GeometryTab(QWidget):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         left = QWidget(); left.setMaximumWidth(880); lv = QVBoxLayout(left)
-        lv.setContentsMargins(16, 8, 10, 8); lv.setSpacing(6)
+        lv.setContentsMargins(16, 8, 10, 8); lv.setSpacing(10)
         lv.addWidget(mk_lbl("2D Panel Geometry", "heading"))
 
         # Panel dimensions
@@ -1403,33 +1514,33 @@ class GeometryTab(QWidget):
         fm.addRow("Preview:", self.lbl_mesh_preview)
         lv.addWidget(grp_mesh)
 
-        # Three mesh action buttons — same size, same amber color
-        btn_style = (
-            f"background:{C4};color:{BG_DEEP};font-weight:bold;font-size:13px;"
-            f"padding:8px 16px;border-radius:5px;border:none;min-height:36px;"
-        )
-        btn_style_hover = (
-            f"QPushButton:hover{{background:#e5c07b;}}"
-            f"QPushButton:disabled{{background:{BORDER};color:{TXTS};}}"
-        )
+        # Three mesh action buttons — amber; Generate is primary (42px), others 34px.
+        # Wrapped in themed() so they re-color on theme toggle (previously static).
+        def _mesh_btn_style(h):
+            return (
+                f"QPushButton{{background:{C4};color:{BTN_TXT};font-weight:bold;font-size:13px;"
+                f"padding:8px 16px;border-radius:5px;border:none;min-height:{h}px;}}"
+                f"QPushButton:hover{{background:{BTN_HOVER_AMBER};}}"
+                f"QPushButton:disabled{{background:{BORDER};color:{TXTS};}}"
+            )
 
         self.btn_gen = QPushButton("Generate Mesh")
-        self.btn_gen.setStyleSheet(f"QPushButton{{{btn_style}}} {btn_style_hover}")
+        themed(self.btn_gen, lambda: _mesh_btn_style(42))
         self.btn_gen.setToolTip("Generate triangular mesh with crack interfaces")
 
         self.btn_update_mesh = QPushButton("Update Mesh")
-        self.btn_update_mesh.setStyleSheet(f"QPushButton{{{btn_style}}} {btn_style_hover}")
+        themed(self.btn_update_mesh, lambda: _mesh_btn_style(34))
         self.btn_update_mesh.setToolTip(
             "Re-generate mesh while preserving existing BCs, loads, and crack positions")
         self.btn_update_mesh.setEnabled(False)
 
         self.btn_validate = QPushButton("Validate Mesh")
-        self.btn_validate.setStyleSheet(f"QPushButton{{{btn_style}}} {btn_style_hover}")
+        themed(self.btn_validate, lambda: _mesh_btn_style(34))
         self.btn_validate.setToolTip("Check mesh integrity and report issues")
 
         self.btn_clear_mesh = QPushButton("Clear Mesh")
         self.btn_clear_mesh.setObjectName("danger")
-        self.btn_clear_mesh.setMinimumHeight(36)
+        self.btn_clear_mesh.setMinimumHeight(34)
         self.btn_clear_mesh.setToolTip("Clear mesh, BCs, and loads from canvas")
 
         btn_row = QHBoxLayout()
@@ -1472,62 +1583,9 @@ class GeometryTab(QWidget):
         self.sb_Ec = dsb(30000., 100., 1e7, 0, 500., tip="Elastic modulus Ec (MPa)")
         self.sb_nu = dsb(0.20,   0.0,  0.49, 2, 0.01, tip="Poisson ratio ν")
 
-        # Reinforcement
-        grp_rb = QGroupBox("Reinforcement")
-        vr = QVBoxLayout(grp_rb); vr.setSpacing(6)
-        vr.addWidget(mk_lbl(
-            "Define rebar geometry before meshing. Assign material properties\n"
-            "in the Materials tab.", "sub"))
-        rb_row = QHBoxLayout()
-        rb_row.addWidget(mk_lbl("x1:"))
-        self.sb_rb_x1 = dsb(0.0, 0., 1e4, 3, 0.05)
-        rb_row.addWidget(self.sb_rb_x1)
-        rb_row.addWidget(mk_lbl("y1:"))
-        self.sb_rb_y1 = dsb(0.0, 0., 1e4, 3, 0.05)
-        rb_row.addWidget(self.sb_rb_y1)
-        rb_row.addWidget(mk_lbl("x2:"))
-        self.sb_rb_x2 = dsb(1.0, 0., 1e4, 3, 0.05)
-        rb_row.addWidget(self.sb_rb_x2)
-        rb_row.addWidget(mk_lbl("y2:"))
-        self.sb_rb_y2 = dsb(0.0, 0., 1e4, 3, 0.05)
-        rb_row.addWidget(self.sb_rb_y2)
-        rb_row.addStretch()
-        vr.addLayout(rb_row)
-
-        rb_prop = QHBoxLayout()
-        rb_prop.addWidget(mk_lbl("L_unb (m):"))
-        self.sb_rb_lunb = dsb(0.1, 0., 100., 3, 0.01,
-            tip="Unbonded length (m) — reinforcement free to slip over this length")
-        rb_prop.addWidget(self.sb_rb_lunb)
-        rb_prop.addStretch()
-        vr.addLayout(rb_prop)
-
-        rb_btns = QHBoxLayout()
-        self.btn_rb_add = QPushButton("＋ Add Rebar")
-        self.btn_rb_add.setObjectName("flat")
-        self.btn_rb_add.setToolTip("Add this rebar to the list")
-        self.btn_rb_del = QPushButton("✖ Remove Selected")
-        self.btn_rb_del.setObjectName("danger")
-        self.btn_rb_del.setToolTip("Remove the selected rebar from the list")
-        self.btn_rb_clr = QPushButton("Clear All")
-        self.btn_rb_clr.setObjectName("flat")
-        rb_btns.addWidget(self.btn_rb_add)
-        rb_btns.addWidget(self.btn_rb_del)
-        rb_btns.addWidget(self.btn_rb_clr)
-        rb_btns.addStretch()
-        vr.addLayout(rb_btns)
-
-        self.tbl_rebars = QTableWidget(0, 5)
-        self.tbl_rebars.setHorizontalHeaderLabels(["x1 (m)", "y1 (m)", "x2 (m)", "y2 (m)", "L_unb (m)"])
-        self.tbl_rebars.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.tbl_rebars.setMaximumHeight(90)
-        self.tbl_rebars.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.tbl_rebars.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        vr.addWidget(self.tbl_rebars)
-
-        self.lbl_rb_status = mk_lbl("No rebars defined.", "sub")
-        vr.addWidget(self.lbl_rb_status)
-        lv.addWidget(grp_rb)
+        # (The legacy free-geometry "Reinforcement" group was removed — it fed
+        # self._rebars which the runner never used. The authoritative reinforcement
+        # UI is the "Reinforcement" group below, feeding rebar_definitions.)
 
         # Crack lines
         grp_crack = QGroupBox("Crack Lines")
@@ -1541,8 +1599,8 @@ class GeometryTab(QWidget):
         self.btn_crack_mode = QPushButton("✏ Crack Mode")
         self.btn_crack_mode.setObjectName("flat")
         self.btn_crack_mode.setCheckable(True)
-        self.btn_crack_mode.setStyleSheet(
-            f"QPushButton#flat:checked{{background:{C4};color:{BG_DEEP};"
+        themed(self.btn_crack_mode, lambda:
+            f"QPushButton#flat:checked{{background:{C4};color:{BTN_TXT};"
             f"border:1px solid {C4};}}")
         self.btn_crack_mode.setToolTip("Toggle crack placement mode: click canvas to add/remove crack Y")
         row_inp1.addWidget(self.txt_crack_y, stretch=1)
@@ -1550,18 +1608,18 @@ class GeometryTab(QWidget):
         vc.addLayout(row_inp1)
         row_crack_commit = QHBoxLayout()
         self.btn_crack_set = QPushButton("✔ Set Cracks")
-        self.btn_crack_set.setStyleSheet("background:#1a7a1a;color:#fff;font-weight:bold;border-radius:4px;")
+        themed(self.btn_crack_set, lambda: f"background:{COMMIT_GREEN};color:#fff;font-weight:bold;border-radius:4px;")
         self.btn_crack_cancel = QPushButton("✖ Cancel")
-        self.btn_crack_cancel.setStyleSheet("background:#7a1a1a;color:#fff;font-weight:bold;border-radius:4px;")
+        themed(self.btn_crack_cancel, lambda: f"background:{COMMIT_RED};color:#fff;font-weight:bold;border-radius:4px;")
         for btn in [self.btn_crack_set, self.btn_crack_cancel]:
             btn.setVisible(False)
-            btn.setMinimumHeight(30)
+            btn.setMinimumHeight(34)
         row_crack_commit.addWidget(self.btn_crack_set)
         row_crack_commit.addWidget(self.btn_crack_cancel)
         row_crack_commit.addStretch()
         vc.addLayout(row_crack_commit)
         self.lbl_crack_mode_status = mk_lbl("", "sub")
-        self.lbl_crack_mode_status.setStyleSheet(f"color:{C4};font-weight:bold;")
+        themed(self.lbl_crack_mode_status, lambda: f"color:{C4};font-weight:bold;")
         self.lbl_crack_mode_status.setWordWrap(True)
         self.lbl_crack_mode_status.setVisible(False)
         vc.addWidget(self.lbl_crack_mode_status)
@@ -1596,6 +1654,9 @@ class GeometryTab(QWidget):
         self._crack_list_layout.setSpacing(6)
         vc.addWidget(self._crack_list_widget)
         QTimer.singleShot(100, self._refresh_crack_list)
+        # Rebuild the per-crack cards on theme change (they read color globals at
+        # build time, so a rebuild after _apply_theme picks up the new theme).
+        register_restyle(self._refresh_crack_list)
         snap_row = QHBoxLayout()
         self.chk_edge_snap = QCheckBox("Enable edge snapping")
         self.chk_edge_snap.setChecked(True)
@@ -1606,7 +1667,7 @@ class GeometryTab(QWidget):
         snap_row.addStretch()
         vc.addLayout(snap_row)
         self.lbl_edge_snap = mk_lbl("", "sub")
-        self.lbl_edge_snap.setStyleSheet(f"color:{C4};font-size:12px;font-weight:bold;")
+        themed(self.lbl_edge_snap, lambda: f"color:{C4};font-size:12px;font-weight:bold;")
         self.lbl_edge_snap.setWordWrap(True)
         vc.addWidget(self.lbl_edge_snap)
         # ── Hand-draw sub-section ──────────────────────────────────────────
@@ -1615,8 +1676,8 @@ class GeometryTab(QWidget):
         self.btn_hand_draw   = QPushButton("Draw Crack")
         self.btn_hand_draw.setObjectName("flat")
         self.btn_hand_draw.setCheckable(True)
-        self.btn_hand_draw.setStyleSheet(
-            f"QPushButton#flat:checked{{background:{C4};color:{BG_DEEP};"
+        themed(self.btn_hand_draw, lambda:
+            f"QPushButton#flat:checked{{background:{C4};color:{BTN_TXT};"
             f"border:1px solid {C4};}}")
         self.btn_hand_draw.setToolTip("Toggle draw mode: drag to sketch a crack stroke; right-click a stroke to erase it")
         self.btn_undo_stroke = QPushButton("Undo")
@@ -1632,18 +1693,18 @@ class GeometryTab(QWidget):
         vc.addLayout(row_hd)
         row_hand_commit = QHBoxLayout()
         self.btn_hand_set = QPushButton("✔ Set Drawing")
-        self.btn_hand_set.setStyleSheet("background:#1a7a1a;color:#fff;font-weight:bold;border-radius:4px;")
+        themed(self.btn_hand_set, lambda: f"background:{COMMIT_GREEN};color:#fff;font-weight:bold;border-radius:4px;")
         self.btn_hand_cancel = QPushButton("✖ Cancel Drawing")
-        self.btn_hand_cancel.setStyleSheet("background:#7a1a1a;color:#fff;font-weight:bold;border-radius:4px;")
+        themed(self.btn_hand_cancel, lambda: f"background:{COMMIT_RED};color:#fff;font-weight:bold;border-radius:4px;")
         for btn in [self.btn_hand_set, self.btn_hand_cancel]:
             btn.setVisible(False)
-            btn.setMinimumHeight(30)
+            btn.setMinimumHeight(34)
         row_hand_commit.addWidget(self.btn_hand_set)
         row_hand_commit.addWidget(self.btn_hand_cancel)
         row_hand_commit.addStretch()
         vc.addLayout(row_hand_commit)
         self.lbl_hand_mode_status = mk_lbl("", "sub")
-        self.lbl_hand_mode_status.setStyleSheet(f"color:{C4};font-weight:bold;")
+        themed(self.lbl_hand_mode_status, lambda: f"color:{C4};font-weight:bold;")
         self.lbl_hand_mode_status.setWordWrap(True)
         self.lbl_hand_mode_status.setVisible(False)
         vc.addWidget(self.lbl_hand_mode_status)
@@ -1664,10 +1725,16 @@ class GeometryTab(QWidget):
         # Quick-assign buttons
         row_qa_top = QHBoxLayout()
         row_qa_bottom = QHBoxLayout()
-        self.btn_fix_bot = QPushButton("Fix Bottom (ux=uy=0)")
+        self.btn_fix_bot = QPushButton("▼ Fix Bottom (pin)")
         self.btn_fix_bot.setObjectName("flat")
-        self.btn_roller_top = QPushButton("Roller Top (ux=0)")
+        self.btn_roller_top = QPushButton("△ Roller Top (slide X)")
         self.btn_roller_top.setObjectName("flat")
+        _bc_quick_style = lambda: (
+            f"QPushButton{{background:{BG_CARD};color:{C4};border:1px solid {C4};"
+            f"border-radius:5px;padding:6px 14px;font-size:12px;font-weight:bold;"
+            f"min-height:34px;}} QPushButton:hover{{background:{C4};color:{BTN_TXT};}}")
+        themed(self.btn_fix_bot, _bc_quick_style)
+        themed(self.btn_roller_top, _bc_quick_style)
         self.btn_clr_bc = QPushButton("Clear All BC")
         self.btn_clr_bc.setObjectName("danger")
         row_qa_top.addWidget(self.btn_fix_bot)
@@ -1679,12 +1746,18 @@ class GeometryTab(QWidget):
         vbc.addLayout(row_qa_bottom)
 
         # Selected node BC assignment
-        self.lbl_sel_node = mk_lbl("No node selected.", "sub")
+        self.lbl_sel_node = QLabel("← Click a node on the canvas to select it")
+        themed(self.lbl_sel_node, lambda:
+            f"color:{TXTS};font-style:italic;font-size:12px;padding:2px 0;")
+        self.lbl_sel_node.setMinimumHeight(0)
+        self.lbl_sel_node.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         vbc.addWidget(self.lbl_sel_node)
         node_bc_row_checks = QHBoxLayout()
         node_bc_row_buttons = QHBoxLayout()
         self.chk_fix_x = QCheckBox("Fix X")
         self.chk_fix_y = QCheckBox("Fix Y")
+        self.chk_fix_x.setChecked(False)
+        self.chk_fix_y.setChecked(False)
         self.btn_apply_bc = QPushButton("✔  Assign BC")
         self.btn_apply_bc.setObjectName("success")
         self.btn_apply_bc.setMinimumHeight(34)
@@ -1701,12 +1774,31 @@ class GeometryTab(QWidget):
         vbc.addLayout(node_bc_row_checks)
         vbc.addLayout(node_bc_row_buttons)
 
+        # BC status summary bar (count of fixed nodes)
+        self.lbl_bc_summary = QLabel("No BCs assigned")
+        themed(self.lbl_bc_summary, lambda:
+            f"color:{C4};font-size:11px;font-weight:bold;padding:4px 8px;"
+            f"background:{BG_CARD};border-radius:4px;border-left:3px solid {C4};")
+        vbc.addWidget(self.lbl_bc_summary)
+
         # BC table
-        self.tbl_bc = QTableWidget(0, 3)
+        self.tbl_bc = _NoScrollTable(0, 3)
         self.tbl_bc.setHorizontalHeaderLabels(["Node", "Fix X", "Fix Y"])
-        self.tbl_bc.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.tbl_bc.setMaximumHeight(70)
+        self.tbl_bc.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.tbl_bc.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.tbl_bc.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.tbl_bc.setMaximumHeight(120)
+        self.tbl_bc.setFocusPolicy(Qt.ClickFocus)
+        self.tbl_bc.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tbl_bc.verticalHeader().setVisible(False)
+        self.tbl_bc.verticalHeader().setDefaultSectionSize(28)
+        self.tbl_bc.setAlternatingRowColors(True)
+        self.tbl_bc.setStyleSheet(
+            f"QTableWidget{{alternate-background-color:{BG_CARD};"
+            f"background:{BG_INPUT};gridline-color:{BORDER};}}")
         vbc.addWidget(self.tbl_bc)
+        vbc.addWidget(mk_lbl(
+            "● Fixed   ○ Free   |   Amber dots on canvas = BC nodes", "sub"))
         lv.addWidget(grp_bc)
 
         # Load Cases manager
@@ -1723,13 +1815,13 @@ class GeometryTab(QWidget):
         self.btn_add_case = QPushButton("+ Add Case")
         self.btn_add_case.setObjectName("flat")
         self.btn_add_case.setMinimumWidth(100)
-        self.btn_add_case.setMinimumHeight(32)
+        self.btn_add_case.setMinimumHeight(34)
         self.btn_add_case.setToolTip("Add a new load case with its own time series and nodal loads")
 
         self.btn_remove_case = QPushButton("− Remove Case")
         self.btn_remove_case.setObjectName("flat")
         self.btn_remove_case.setMinimumWidth(130)
-        self.btn_remove_case.setMinimumHeight(32)
+        self.btn_remove_case.setMinimumHeight(34)
         self.btn_remove_case.setToolTip("Remove the currently selected load case and all its nodal loads")
         lc_sel_row.addWidget(mk_lbl("Case:"))
         lc_sel_row.addWidget(self.cmb_load_case, stretch=1)
@@ -1765,7 +1857,7 @@ class GeometryTab(QWidget):
         # Visual summary label that explains the behavior in plain English
         self.lbl_lc_behavior = mk_lbl("", "sub")
         self.lbl_lc_behavior.setWordWrap(True)
-        self.lbl_lc_behavior.setStyleSheet(f"color:{C4};font-size:11px;padding:4px;")
+        themed(self.lbl_lc_behavior, lambda: f"color:{C4};font-size:11px;padding:4px;")
 
         fdet.addRow("Name:", self.txt_lc_name)
         fdet.addRow("Time series:", self.cmb_lc_ts_type)
@@ -1816,9 +1908,14 @@ class GeometryTab(QWidget):
         vld.addWidget(self._grp_lc_detail)
         lv.addWidget(grp_load)
 
-        # Reinforcement (Crossing Cracks)
-        grp_rebar = QGroupBox("Reinforcement (Crossing Cracks)")
+        # Reinforcement (bars crossing crack interfaces — fed to rebar_definitions)
+        grp_rebar = QGroupBox("Reinforcement")
         vr = QVBoxLayout(grp_rebar); vr.setSpacing(6)
+        hint = mk_lbl(
+            "Define reinforcement bars crossing crack interfaces.\n"
+            "Select a crack Y, enter bar properties, then click Add Rebar.", "sub")
+        hint.setWordWrap(True)
+        vr.addWidget(hint)
         fr = QFormLayout(); fr.setSpacing(6)
         self.cmb_rebar_crack_y = QComboBox()
         self.sb_rebar_As = dsb(100.0, 1e-6, 1e9, 3, 10.0,
@@ -1836,23 +1933,52 @@ class GeometryTab(QWidget):
         x_row.addWidget(self.sb_rebar_x)
         x_row.addWidget(self.chk_rebar_uniform)
         x_wrap = QWidget(); x_wrap.setLayout(x_row)
+        for _rb_sb in (self.sb_rebar_As, self.sb_rebar_Es, self.sb_rebar_fy,
+                       self.sb_rebar_Lunb, self.sb_rebar_x):
+            _rb_sb.setMinimumWidth(120); _rb_sb.setMaximumWidth(200)
+
+        def _labeled_field(text, widget):
+            col = QVBoxLayout(); col.setContentsMargins(0, 0, 0, 0); col.setSpacing(2)
+            col.addWidget(mk_lbl(text, "sub"))
+            col.addWidget(widget)
+            wrap = QWidget(); wrap.setLayout(col)
+            return wrap
+
+        rebar_pair1 = QHBoxLayout(); rebar_pair1.setSpacing(8)
+        rebar_pair1.addWidget(_labeled_field("As (mm^2):", self.sb_rebar_As))
+        rebar_pair1.addWidget(_labeled_field("Es (MPa):", self.sb_rebar_Es))
+        rebar_pair1.addStretch()
+        rebar_pair1_wrap = QWidget(); rebar_pair1_wrap.setLayout(rebar_pair1)
+
+        rebar_pair2 = QHBoxLayout(); rebar_pair2.setSpacing(8)
+        rebar_pair2.addWidget(_labeled_field("fy (MPa):", self.sb_rebar_fy))
+        rebar_pair2.addWidget(_labeled_field("L_unb (m):", self.sb_rebar_Lunb))
+        rebar_pair2.addStretch()
+        rebar_pair2_wrap = QWidget(); rebar_pair2_wrap.setLayout(rebar_pair2)
+
         fr.addRow("Crack Y (m):", self.cmb_rebar_crack_y)
-        fr.addRow("As (mm^2):", self.sb_rebar_As)
-        fr.addRow("Es (MPa):", self.sb_rebar_Es)
-        fr.addRow("fy (MPa):", self.sb_rebar_fy)
-        fr.addRow("L_unb (m):", self.sb_rebar_Lunb)
+        fr.addRow(rebar_pair1_wrap)
+        fr.addRow(rebar_pair2_wrap)
         fr.addRow("X position (m):", x_wrap)
         vr.addLayout(fr)
 
         rebar_btn_row = QHBoxLayout()
-        self.btn_add_rebar = QPushButton("Add Rebar")
-        self.btn_add_rebar.setObjectName("flat")
+        self.btn_add_rebar = QPushButton("+ Add Rebar")
+        self.btn_add_rebar.setObjectName("success")
+        self.btn_add_rebar.setMinimumHeight(36)
+        self.btn_add_rebar.setMinimumWidth(120)
         self.btn_remove_rebar = QPushButton("Remove Selected")
         self.btn_remove_rebar.setObjectName("danger")
+        self.btn_remove_rebar.setMinimumHeight(36)
+        self.btn_remove_rebar.setMinimumWidth(140)
         rebar_btn_row.addWidget(self.btn_add_rebar)
         rebar_btn_row.addWidget(self.btn_remove_rebar)
         rebar_btn_row.addStretch()
         vr.addLayout(rebar_btn_row)
+
+        self.lbl_no_rebar = mk_lbl("No reinforcement defined.", "sub")
+        themed(self.lbl_no_rebar, lambda: f"color:{TXTS};font-style:italic;padding:8px;")
+        vr.addWidget(self.lbl_no_rebar)
 
         self.tbl_rebar = QTableWidget(0, 6)
         self.tbl_rebar.setHorizontalHeaderLabels([
@@ -1861,7 +1987,7 @@ class GeometryTab(QWidget):
         self.tbl_rebar.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.tbl_rebar.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl_rebar.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.tbl_rebar.setMaximumHeight(160)
+        self.tbl_rebar.setMaximumHeight(120)
         vr.addWidget(self.tbl_rebar)
         lv.addWidget(grp_rebar)
         self._rebar_definitions = []
@@ -1900,9 +2026,6 @@ class GeometryTab(QWidget):
         self._selected_node = None
         self._crack_ys      = []
         self._crack_angle_map = {}   # {round(y,6): angle_deg} — angle locked at placement time
-        self._rebars = []
-        # each entry: {'x1': float, 'y1': float, 'x2': float, 'y2': float,
-        #              'L_unb': float, 'Es': float, 'As': float}
         self._hand_strokes  = []   # mirror of canvas.hand_strokes
         self._hand_crack_ys = []   # y_mean derived from each hand stroke
         self._hand_crack_defs = []
@@ -1946,9 +2069,6 @@ class GeometryTab(QWidget):
         self.btn_clr_bc.clicked.connect(self._clear_all_bc)
         self.btn_apply_bc.clicked.connect(self._apply_bc_to_node)
         self.btn_clear_node_bc.clicked.connect(self._clear_node_bc)
-        self.btn_rb_add.clicked.connect(self._add_rebar)
-        self.btn_rb_del.clicked.connect(self._del_rebar)
-        self.btn_rb_clr.clicked.connect(self._clr_rebars)
         self.cmb_load_case.currentTextChanged.connect(self._on_load_case_changed)
         self.btn_add_case.clicked.connect(self._add_load_case)
         self.btn_remove_case.clicked.connect(self._remove_load_case)
@@ -1991,10 +2111,10 @@ class GeometryTab(QWidget):
         QTimer.singleShot(100, self._reposition_zoom_overlay)
 
     def _build_canvas_panel(self):
-        right = QWidget(); right.setStyleSheet(f"background:{BG_PANEL};")
+        right = QWidget(); themed(right, lambda: f"background:{BG_PANEL};")
         rv = QVBoxLayout(right); rv.setContentsMargins(8, 16, 16, 16); rv.setSpacing(6)
         self.lbl_canvas_tab = QLabel("  ◉ Panel View")
-        self.lbl_canvas_tab.setStyleSheet(f"color:{C4};font-weight:bold;font-size:11px;padding-bottom:4px;")
+        themed(self.lbl_canvas_tab, lambda: f"color:{C4};font-weight:bold;font-size:11px;padding-bottom:4px;")
         rv.addWidget(self.lbl_canvas_tab)
         # Canvas header — two rows: top = hint + mode, bottom = zoom + toggles
         canvas_top = QHBoxLayout()
@@ -2002,7 +2122,7 @@ class GeometryTab(QWidget):
         self.lbl_canvas_hint = mk_lbl("Select: click a node to assign BC / load", "sub")
         self.lbl_canvas_hint.setMinimumWidth(200)
         self.lbl_canvas_mode = mk_lbl("Mode: Select", "sub")
-        self.lbl_canvas_mode.setStyleSheet(f"color:{C4};font-weight:bold;")
+        themed(self.lbl_canvas_mode, lambda: f"color:{C4};font-weight:bold;")
         self.lbl_canvas_mode.setMinimumWidth(180)
         canvas_top.addWidget(self.lbl_canvas_hint, stretch=1)
         canvas_top.addWidget(self.lbl_canvas_mode)
@@ -2023,16 +2143,29 @@ class GeometryTab(QWidget):
         self.chk_show_loads = QCheckBox("Loads")
         self.chk_show_loads.setChecked(True)
 
-        for chk in [self.chk_show_ids, self.chk_show_elem_ids,
-                    self.chk_show_crack_links, self.chk_show_bcs, self.chk_show_loads]:
+        self._canvas_chks = [self.chk_show_ids, self.chk_show_elem_ids,
+                             self.chk_show_crack_links, self.chk_show_bcs, self.chk_show_loads]
+        # Compact themed checkbox style for the canvas header (re-applied on toggle)
+        def _restyle_canvas_chks():
+            css = (
+                f"QCheckBox{{color:{TXT};spacing:6px;font-size:12px;}}"
+                f"QCheckBox::indicator{{width:14px;height:14px;"
+                f"border:1px solid {BORDER};border-radius:3px;background:{BG_INPUT};}}"
+                f"QCheckBox::indicator:checked{{background:{C1};border-color:{C1};}}"
+            )
+            for chk in self._canvas_chks:
+                chk.setStyleSheet(css)
+        _restyle_canvas_chks()
+        register_restyle(_restyle_canvas_chks)
+        for chk in self._canvas_chks:
             canvas_controls.addWidget(chk)
 
         canvas_controls.addStretch()
         rv.addLayout(canvas_controls)
 
         self.lbl_canvas_view_only = QLabel("  🔒 View only — go to Geometry tab to edit")
-        self.lbl_canvas_view_only.setStyleSheet(
-            f"color:{BG_DEEP};background:{C4};font-size:10px;"
+        themed(self.lbl_canvas_view_only, lambda:
+            f"color:{BTN_TXT};background:{C4};font-size:10px;"
             f"font-weight:bold;padding:2px 8px;")
         self.lbl_canvas_view_only.setFixedHeight(22)
         self.lbl_canvas_view_only.setVisible(False)
@@ -2056,30 +2189,33 @@ class GeometryTab(QWidget):
         zlay.setContentsMargins(4, 4, 4, 4)
         zlay.setSpacing(3)
 
-        # Themed (was hardcoded rgba dark/blue literals that ignored the theme)
-        zoom_btn_style = (
-            f"QPushButton{{background:{BG_CARD};color:{TXT};"
-            f"border:1px solid {BORDER};border-radius:4px;"
-            f"font-weight:bold;font-size:14px;padding:2px;}}"
-            f"QPushButton:hover{{background:{C1};color:{BG_DEEP};"
-            f"border-color:{C1};}}"
-        )
+        # Translucent overlay buttons — rgba derived from BG_CARD so they tint
+        # with the theme; re-applied on toggle via themed().
+        def _zoom_btn_style():
+            r, g, b, _ = QColor(BG_CARD).getRgb()
+            return (
+                f"QPushButton{{background:rgba({r},{g},{b},200);color:{TXT};"
+                f"border:1px solid {BORDER};border-radius:4px;"
+                f"font-weight:bold;font-size:14px;padding:2px;}}"
+                f"QPushButton:hover{{background:{C1};color:{BTN_TXT};"
+                f"border-color:{C1};}}"
+            )
 
         self.btn_zoom_out = QPushButton("−")
         self.btn_zoom_out.setFixedSize(32, 28)
-        self.btn_zoom_out.setStyleSheet(zoom_btn_style)
+        themed(self.btn_zoom_out, _zoom_btn_style)
         self.btn_zoom_out.setToolTip("Zoom out")
         self.btn_zoom_out.setCursor(Qt.PointingHandCursor)
 
         self.btn_zoom_in = QPushButton("+")
         self.btn_zoom_in.setFixedSize(32, 28)
-        self.btn_zoom_in.setStyleSheet(zoom_btn_style)
+        themed(self.btn_zoom_in, _zoom_btn_style)
         self.btn_zoom_in.setToolTip("Zoom in")
         self.btn_zoom_in.setCursor(Qt.PointingHandCursor)
 
         self.btn_zoom_reset = QPushButton("Fit")
         self.btn_zoom_reset.setFixedSize(40, 28)
-        self.btn_zoom_reset.setStyleSheet(zoom_btn_style)
+        themed(self.btn_zoom_reset, _zoom_btn_style)
         self.btn_zoom_reset.setToolTip("Reset to fit panel")
         self.btn_zoom_reset.setCursor(Qt.PointingHandCursor)
 
@@ -2088,7 +2224,7 @@ class GeometryTab(QWidget):
         zlay.addWidget(self.btn_zoom_reset)
 
         self.lbl_zoom = QLabel("100%")
-        self.lbl_zoom.setStyleSheet(
+        themed(self.lbl_zoom, lambda:
             f"color:{TXTS};font-size:9px;font-weight:bold;"
             f"background:transparent;padding:0;")
         self.lbl_zoom.setFixedWidth(36)
@@ -2455,7 +2591,7 @@ class GeometryTab(QWidget):
         if not any(abs(y - yc) < 0.01 * self.sb_H.value() for yc in self._crack_ys):
             self._crack_ys.append(y); self._crack_ys.sort()
             # Lock in the current angle for this specific crack
-            self._crack_angle_map[round(y, 6)] = float(
+            self._crack_angle_map[round(float(y), 6)] = float(
                 self.sb_crack_angle.value())
         self._refresh_crack_label()
         self.canvas.set_pending_cracks(self._crack_ys, self.sb_W.value(), self.sb_H.value())
@@ -2587,7 +2723,7 @@ class GeometryTab(QWidget):
                 f"background:transparent;border:none;")
 
             btn_del = QPushButton("✕  Remove")
-            btn_del.setFixedHeight(32)
+            btn_del.setFixedHeight(28)
             btn_del.setMinimumWidth(110)
             btn_del.setStyleSheet(
                 f"QPushButton{{background:transparent;color:{C3};"
@@ -2679,44 +2815,7 @@ class GeometryTab(QWidget):
                     break
         self.btn_add_rebar.setEnabled(self.cmb_rebar_crack_y.count() > 0)
 
-    def _add_rebar(self):
-        rb = {
-            'x1': self.sb_rb_x1.value(), 'y1': self.sb_rb_y1.value(),
-            'x2': self.sb_rb_x2.value(), 'y2': self.sb_rb_y2.value(),
-            'L_unb': self.sb_rb_lunb.value(),
-        }
-        self._rebars.append(rb)
-        self._refresh_rebar_table()
-        self._mark_mesh_stale()
-
-    def _del_rebar(self):
-        row = self.tbl_rebars.currentRow()
-        if row < 0 or row >= len(self._rebars):
-            return
-        self._rebars.pop(row)
-        self._refresh_rebar_table()
-        self._mark_mesh_stale()
-
-    def _clr_rebars(self):
-        self._rebars.clear()
-        self._refresh_rebar_table()
-        self._mark_mesh_stale()
-
     def _refresh_rebar_table(self):
-        if hasattr(self, "tbl_rebars"):
-            self.tbl_rebars.setRowCount(0)
-            for rb in self._rebars:
-                r = self.tbl_rebars.rowCount()
-                self.tbl_rebars.insertRow(r)
-                self.tbl_rebars.setItem(r, 0, QTableWidgetItem(f"{rb['x1']:.3f}"))
-                self.tbl_rebars.setItem(r, 1, QTableWidgetItem(f"{rb['y1']:.3f}"))
-                self.tbl_rebars.setItem(r, 2, QTableWidgetItem(f"{rb['x2']:.3f}"))
-                self.tbl_rebars.setItem(r, 3, QTableWidgetItem(f"{rb['y2']:.3f}"))
-                self.tbl_rebars.setItem(r, 4, QTableWidgetItem(f"{rb['L_unb']:.3f}"))
-            n = len(self._rebars)
-            if hasattr(self, "lbl_rb_status"):
-                self.lbl_rb_status.setText(
-                    f"{n} rebar(s) defined." if n else "No rebars defined.")
         if hasattr(self, "tbl_rebar"):
             self.tbl_rebar.setRowCount(len(self._rebar_definitions))
             for r, rb in enumerate(self._rebar_definitions):
@@ -2731,10 +2830,8 @@ class GeometryTab(QWidget):
                 ]
                 for c, txt in enumerate(cells):
                     self.tbl_rebar.setItem(r, c, QTableWidgetItem(txt))
-
-    def _mark_mesh_stale(self):
-        self.lbl_mesh_info.setText(
-            "⚠ Rebar list changed — regenerate mesh before running.")
+            self.lbl_no_rebar.setVisible(len(self._rebar_definitions) == 0)
+            self.tbl_rebar.setVisible(len(self._rebar_definitions) > 0)
 
     def _add_rebar_definition(self):
         if self.cmb_rebar_crack_y.count() == 0:
@@ -2824,7 +2921,7 @@ class GeometryTab(QWidget):
             self.btn_apply_load.setEnabled(True)
         else:
             if self._selected_node is None:
-                self.lbl_sel_node.setText("No node selected.")
+                self.lbl_sel_node.setText(_NO_NODE_HINT)
                 self.btn_apply_bc.setEnabled(False)
                 self.btn_apply_load.setEnabled(False)
             else:
@@ -2931,10 +3028,6 @@ class GeometryTab(QWidget):
         )
 
     def _generate(self):
-        if self._rebars:
-            # future: pass rebar endpoints as mesh constraints
-            # for now just log them so runner receives them
-            pass
         # Merge any Y values the user typed but hasn't committed yet
         """
         Build or refresh mesh-related data used by the geometry and analysis flow.
@@ -3047,6 +3140,7 @@ class GeometryTab(QWidget):
                 f"Poor aspect ratios reduce solver accuracy and convergence.")
         self._update_bc_table(); self._update_load_table()
         self.btn_update_mesh.setEnabled(True)
+        self._refresh_rebar_crack_y_options()
         self.mesh_generated.emit()
 
     # ------------------------------------------------------------------
@@ -3270,7 +3364,7 @@ class GeometryTab(QWidget):
         """
         if nid == -1:
             self._selected_node = None
-            self.lbl_sel_node.setText("No node selected.")
+            self.lbl_sel_node.setText(_NO_NODE_HINT)
             self.btn_apply_bc.setEnabled(False)
             self.btn_clear_node_bc.setEnabled(False)
             self.btn_apply_load.setEnabled(False)
@@ -3375,7 +3469,7 @@ class GeometryTab(QWidget):
                 self._selected_node = next(iter(self.canvas._multi_selected))
             else:
                 self._selected_node = None
-                self.lbl_sel_node.setText("No node selected.")
+                self.lbl_sel_node.setText(_NO_NODE_HINT)
                 self.btn_apply_bc.setEnabled(False)
                 self.btn_clear_node_bc.setEnabled(False)
                 self.btn_apply_load.setEnabled(False)
@@ -3396,7 +3490,7 @@ class GeometryTab(QWidget):
         self.canvas._multi_selected = set()
         self.canvas.selected_node = None
         self._selected_node = None
-        self.lbl_sel_node.setText("No node selected.")
+        self.lbl_sel_node.setText(_NO_NODE_HINT)
         self.btn_apply_bc.setEnabled(False)
         self.btn_clear_node_bc.setEnabled(False)
         self.btn_apply_load.setEnabled(False)
@@ -3731,8 +3825,30 @@ class GeometryTab(QWidget):
         self.tbl_bc.setRowCount(len(items))
         for i, (nid, (fx, fy)) in enumerate(items):
             self.tbl_bc.setItem(i, 0, QTableWidgetItem(str(nid)))
-            self.tbl_bc.setItem(i, 1, QTableWidgetItem("✓" if fx else ""))
-            self.tbl_bc.setItem(i, 2, QTableWidgetItem("✓" if fy else ""))
+            item_x = QTableWidgetItem("●  Fixed" if fx else "○  Free")
+            item_x.setForeground(QColor(C1 if fx else TXTS))
+            self.tbl_bc.setItem(i, 1, item_x)
+            item_y = QTableWidgetItem("●  Fixed" if fy else "○  Free")
+            item_y.setForeground(QColor(C2 if fy else TXTS))
+            self.tbl_bc.setItem(i, 2, item_y)
+        self._update_bc_summary()
+
+    def _update_bc_summary(self):
+        if not self._bc_nodes:
+            self.lbl_bc_summary.setText("No BCs assigned")
+            self.lbl_bc_summary.setStyleSheet(
+                f"color:{C3};font-size:11px;font-weight:bold;padding:4px 8px 4px 12px;"
+                f"background:{BG_CARD};border-radius:4px;border-left:3px solid {C3};")
+            return
+        n = len(self._bc_nodes)
+        nx = sum(1 for v in self._bc_nodes.values() if v[0])
+        ny = sum(1 for v in self._bc_nodes.values() if v[1])
+        nxy = sum(1 for v in self._bc_nodes.values() if v[0] and v[1])
+        self.lbl_bc_summary.setText(
+            f"{n} node(s) fixed  |  Fix X: {nx}  ·  Fix Y: {ny}  ·  Both: {nxy}")
+        self.lbl_bc_summary.setStyleSheet(
+            f"color:{C2};font-size:11px;font-weight:bold;padding:4px 8px 4px 12px;"
+            f"background:{BG_CARD};border-radius:4px;border-left:3px solid {C2};")
 
     def _update_load_table(self):
         if hasattr(self, "tbl_loads"):
@@ -3917,7 +4033,6 @@ class GeometryTab(QWidget):
             }
             for name, case in self._load_cases.items()
         }
-        p["rebars"] = list(self._rebars)
         p["hand_crack_strokes"] = [[[pt[0], pt[1]] for pt in s]
                                    for s in self._hand_strokes]
         p["hand_crack_ys"]      = list(self._hand_crack_ys)
@@ -4372,33 +4487,45 @@ class CrackMaterialTab(QWidget):
         ctrl_row2b.addWidget(self.btn_select_all); ctrl_row2b.addWidget(self.btn_reset_default)
         ctrl_row2b.addStretch(); outer.addLayout(ctrl_row2b)
 
-        # Route through the active theme constants instead of hardcoded dark hexes
-        _IN = BG_INPUT
-        _BD = C1
+        # Highlighted-input styling via INPUT_HL_* theme keys; re-applied on toggle.
         crack_font = QFont("Segoe UI", 11)
         SP_EXP = QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
-        combo_css = (
-            f"QComboBox{{background:{_IN};color:{TXT};border:2px solid {_BD};"
-            f"border-radius:4px;padding:4px 8px;min-height:28px;font-size:12px;}}"
-            f"QComboBox::drop-down{{width:22px;border:none;}}"
-            f"QComboBox QAbstractItemView{{background:{BG_CARD};color:{TXT};"
-            f"border:1px solid {_BD};selection-background-color:{C1};}}"
-        )
-        spin_css = (
-            f"QDoubleSpinBox,QSpinBox{{background:{_IN};color:{TXT};border:2px solid {_BD};"
-            f"border-radius:4px;padding:4px 8px;min-height:28px;font-size:12px;}}"
-            f"QDoubleSpinBox::up-button,QDoubleSpinBox::down-button,"
-            f"QSpinBox::up-button,QSpinBox::down-button"
-            f"{{width:0;height:0;border:none;}}"
-        )
+        def combo_css():
+            return (
+                f"QComboBox{{background:{INPUT_HL_BG};color:{TXT};border:2px solid {INPUT_HL_BORDER};"
+                f"border-radius:4px;padding:4px 8px;min-height:28px;font-size:12px;}}"
+                f"QComboBox::drop-down{{width:22px;border:none;}}"
+                f"QComboBox QAbstractItemView{{background:{BG_CARD};color:{TXT};"
+                f"border:1px solid {INPUT_HL_BORDER};selection-background-color:{C1};}}"
+            )
+        def spin_css():
+            return (
+                f"QDoubleSpinBox,QSpinBox{{background:{INPUT_HL_BG};color:{TXT};border:2px solid {INPUT_HL_BORDER};"
+                f"border-radius:4px;padding:4px 8px;min-height:28px;font-size:12px;}}"
+                f"QDoubleSpinBox::up-button,QDoubleSpinBox::down-button,"
+                f"QSpinBox::up-button,QSpinBox::down-button"
+                f"{{width:0;height:0;border:none;}}"
+            )
+
+        # Collect highlighted inputs so a single registered closure can re-style
+        # them all on theme change (the global QSS would otherwise override them).
+        self._themed_crack_inputs = []
+        def _reg_input(w, css_fn):
+            w.setStyleSheet(css_fn())
+            self._themed_crack_inputs.append((w, css_fn))
+            return w
+        def _restyle_crack_inputs():
+            for w, css_fn in self._themed_crack_inputs:
+                w.setStyleSheet(css_fn())
+        register_restyle(_restyle_crack_inputs)
 
         def _make_combo(items, tip=""):
             cb = QComboBox()
             cb.addItems(items)
             if tip: cb.setToolTip(tip)
             cb.setFont(crack_font)
-            cb.setStyleSheet(combo_css)
+            _reg_input(cb, combo_css)
             cb.setSizePolicy(SP_EXP)
             cb.setMinimumWidth(160)
             cb.setMinimumHeight(34)
@@ -4415,14 +4542,14 @@ class CrackMaterialTab(QWidget):
             sb.setFont(crack_font)
             sb.setButtonSymbols(QAbstractSpinBox.NoButtons)
             sb.setAlignment(Qt.AlignLeft)
-            sb.setStyleSheet(spin_css)
+            _reg_input(sb, spin_css)
             sb.setSizePolicy(SP_EXP)
             sb.setMinimumWidth(160); sb.setMinimumHeight(34)
             return sb
 
         def _make_isb(val, lo, hi, tip=""):
             """
-            Keep this part of the workflow 
+            Keep this part of the workflow
             """
             sb = QSpinBox()
             sb.setRange(lo, hi); sb.setValue(int(val))
@@ -4430,7 +4557,7 @@ class CrackMaterialTab(QWidget):
             sb.setFont(crack_font)
             sb.setButtonSymbols(QAbstractSpinBox.NoButtons)
             sb.setAlignment(Qt.AlignLeft)
-            sb.setStyleSheet(spin_css)
+            _reg_input(sb, spin_css)
             sb.setSizePolicy(SP_EXP)
             sb.setMinimumWidth(160); sb.setMinimumHeight(34)
             return sb
@@ -4709,18 +4836,15 @@ class CrackMaterialTab(QWidget):
 
         self.preview_fig = Figure(facecolor=BG_DEEP, tight_layout=True)
         self.ax_prev = self.preview_fig.add_subplot(111)
-        self.ax_prev.set_facecolor(BG_PANEL)
-        self.ax_prev.tick_params(colors=TXTS, labelsize=9)
-        self.ax_prev.xaxis.label.set_color(TXT)
-        self.ax_prev.yaxis.label.set_color(TXT)
-        for s in self.ax_prev.spines.values():
-            s.set_edgecolor(BORDER)
-        self.ax_prev.grid(True, alpha=0.15, color=BORDER, linestyle="--")
+        restyle_axes(self.preview_fig, self.ax_prev)
         self.ax_prev.set_title("Force vs Displacement", color=C1)
         self.ax_prev.set_xlabel("Displacement (m)")
         self.ax_prev.set_ylabel("Force (kN)")
         self.preview_canvas = FigureCanvas(self.preview_fig)
         hpv.addWidget(self.preview_canvas, stretch=1)
+        # Re-style preview axes on theme change
+        register_restyle(lambda: (restyle_axes(self.preview_fig, self.ax_prev),
+                                  self.preview_canvas.draw_idle()))
         outer.addWidget(grp_preview)
         grp_rb_mat = QGroupBox("Reinforcement Material (1D Truss)")
         frm = QFormLayout(grp_rb_mat); frm.setSpacing(8)
@@ -4751,7 +4875,7 @@ class CrackMaterialTab(QWidget):
         tbl_header_row = QHBoxLayout()
         self.btn_tbl_toggle = QPushButton("▼  Crack Element Table")
         self.btn_tbl_toggle.setObjectName("flat")
-        self.btn_tbl_toggle.setStyleSheet(
+        themed(self.btn_tbl_toggle, lambda:
             f"QPushButton{{background:{BG_CARD};color:{C1};border:1px solid {BORDER};"
             f"border-radius:4px;padding:7px 14px;font-weight:bold;font-size:12px;"
             f"text-align:left;}} QPushButton:hover{{background:{BG_PANEL};}}")
@@ -4966,13 +5090,7 @@ class CrackMaterialTab(QWidget):
         force = np.array(result.get("force", []), dtype=float)
 
         self.ax_prev.cla()
-        self.ax_prev.set_facecolor(BG_PANEL)
-        self.ax_prev.tick_params(colors=TXTS, labelsize=9)
-        self.ax_prev.xaxis.label.set_color(TXT)
-        self.ax_prev.yaxis.label.set_color(TXT)
-        for s in self.ax_prev.spines.values():
-            s.set_edgecolor(BORDER)
-        self.ax_prev.grid(True, alpha=0.15, color=BORDER, linestyle="--")
+        restyle_axes(self.preview_fig, self.ax_prev)
         self.ax_prev.plot(slip, force, color=C1, lw=1.8)
         self.ax_prev.set_title("Force vs Displacement", color=C1)
         self.ax_prev.set_xlabel("Displacement (m)")
@@ -5524,10 +5642,13 @@ QComboBox QAbstractItemView {{
         vloads.addLayout(load_row_inputs)
         vloads.addLayout(load_row_buttons)
 
-        self.tbl_loads = QTableWidget(0, 3)
+        self.tbl_loads = _NoScrollTable(0, 3)
         self.tbl_loads.setHorizontalHeaderLabels(["Node", "Fx (kN)", "Fy (kN)"])
         self.tbl_loads.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.tbl_loads.setMaximumHeight(70)
+        self.tbl_loads.setMaximumHeight(120)
+        self.tbl_loads.setFocusPolicy(Qt.ClickFocus)
+        self.tbl_loads.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tbl_loads.verticalHeader().setVisible(False)
         vloads.addWidget(self.tbl_loads)
 
         outer.addWidget(grp_loads)
@@ -5887,14 +6008,14 @@ class RunTab(QWidget):
         self.btn_auto_detect.setMinimumHeight(40); self.btn_auto_detect.setMinimumWidth(180)
         self.btn_validate_build = QPushButton("✓ Validate OpenSeesPy Build")
         self.btn_validate_build.setObjectName("flat")
-        self.btn_validate_build.setMinimumHeight(36); self.btn_validate_build.setMinimumWidth(200)
+        self.btn_validate_build.setMinimumHeight(34); self.btn_validate_build.setMinimumWidth(200)
         self.btn_validate_build.setToolTip("Check if OpenSeesPy backend is working correctly via WSL or local Python")
         self.btn_self_test = QPushButton("🧪 Test MultiSurfCrack2D")
         self.btn_self_test.setObjectName("flat")
-        self.btn_self_test.setMinimumHeight(36); self.btn_self_test.setMinimumWidth(190)
+        self.btn_self_test.setMinimumHeight(34); self.btn_self_test.setMinimumWidth(190)
         self.btn_self_test.setToolTip("Test if MultiSurfCrack2D material is available in your OpenSees build")
         self.btn_clear = QPushButton("🗑 Clear Console"); self.btn_clear.setObjectName("flat")
-        self.btn_clear.setMinimumHeight(36); self.btn_clear.setMinimumWidth(130)
+        self.btn_clear.setMinimumHeight(34); self.btn_clear.setMinimumWidth(130)
 
         run_row1 = QHBoxLayout(); run_row1.setSpacing(6)
         run_row1.addWidget(self.btn_run); run_row1.addWidget(self.btn_auto_detect); run_row1.addStretch()
@@ -5907,6 +6028,9 @@ class RunTab(QWidget):
 
         self.lbl_status = mk_lbl("Ready. Configure Geometry → Crack Materials → Analysis → Run.", "sub")
         outer.addWidget(self.lbl_status)
+        self._detect_ok = True
+        self._status_ok = True
+        register_restyle(self._restyle_status_labels)
 
         grp_con = QGroupBox("Console Output")
         lc = QVBoxLayout(grp_con)
@@ -6001,6 +6125,7 @@ class RunTab(QWidget):
     def get_activate(self): return self.wsl_activate.text().strip() or "true"
 
     def set_detection_status(self, msg, ok=True):
+        self._detect_ok = ok
         self.lbl_detect.setText(msg)
         self.lbl_detect.setStyleSheet(f"color:{C2 if ok else C3};font-weight:bold;")
 
@@ -6009,8 +6134,16 @@ class RunTab(QWidget):
         self.console.verticalScrollBar().setValue(self.console.verticalScrollBar().maximum())
 
     def set_status(self, msg, ok=True):
+        self._status_ok = ok
         self.lbl_status.setStyleSheet(f"color:{C2 if ok else C3};font-weight:bold;")
         self.lbl_status.setText(msg)
+
+    def _restyle_status_labels(self):
+        """Re-apply ok/fail colors after a theme change (preserves state)."""
+        self.lbl_detect.setStyleSheet(
+            f"color:{C2 if getattr(self, '_detect_ok', True) else C3};font-weight:bold;")
+        self.lbl_status.setStyleSheet(
+            f"color:{C2 if getattr(self, '_status_ok', True) else C3};font-weight:bold;")
 
 
 
@@ -6141,7 +6274,7 @@ class ResultsTab(QWidget):
         ctrl_row2 = QHBoxLayout(); ctrl_row2.setSpacing(6)
         for btn in [self.btn_rp, self.btn_save, self.btn_csv,
                     self.btn_load_exp, self.btn_clear_exp]:
-            btn.setMinimumHeight(36); btn.setMinimumWidth(130); ctrl_row2.addWidget(btn)
+            btn.setMinimumHeight(34); btn.setMinimumWidth(130); ctrl_row2.addWidget(btn)
         ctrl_row2.addStretch(); outer.addLayout(ctrl_row2)
 
         # Overlay-mode controls (hidden unless "Crack Behavior Overlay") 
@@ -6166,8 +6299,10 @@ class ResultsTab(QWidget):
         self._style_ax()
         self.canv = FigureCanvas(self.fig)
         self.tb   = NavigationToolbar(self.canv, self)
-        self.tb.setStyleSheet(f"background:{BG_PANEL};color:{TXT};")
+        themed(self.tb, lambda: f"background:{BG_PANEL};color:{TXT};")
         outer.addWidget(self.tb); outer.addWidget(self.canv, stretch=1)
+        # Re-style axes + redraw (incl. legend & overlay colors) on theme change
+        register_restyle(lambda: (self.replot(), self.canv.draw_idle()))
 
         self._reset()
         self.canv.mpl_connect("button_press_event", self._on_canvas_click)
@@ -6183,12 +6318,7 @@ class ResultsTab(QWidget):
         self.btn_clear_exp.clicked.connect(self._clear_exp_data)
 
     def _style_ax(self):
-        self.ax.set_facecolor(BG_PANEL)
-        self.ax.tick_params(colors=TXTS, labelsize=9)
-        self.ax.xaxis.label.set_color(TXT); self.ax.yaxis.label.set_color(TXT)
-        self.ax.title.set_color(C1)
-        for s in self.ax.spines.values(): s.set_edgecolor(BORDER)
-        self.ax.grid(True, alpha=0.15, color=BORDER, linestyle="--")
+        restyle_axes(self.fig, self.ax)
 
     def _load_exp_data(self):
         path, _ = QFileDialog.getOpenFileName(self, "Load Experimental Data CSV", "",
@@ -6282,7 +6412,7 @@ class ResultsTab(QWidget):
             self.ax.plot(self._disp, self._force, color=C1, lw=1.8, label="Response")
             if self._exp_disp is not None and self._exp_force is not None:
                 self.ax.plot(self._exp_disp, self._exp_force,
-                             color="#f0883e", lw=1.5, ls="--", label="Experimental")
+                             color=EXP_DATA, lw=1.5, ls="--", label="Experimental")
             self.ax.set_xlabel("Displacement (m)"); self.ax.set_ylabel("Force (kN)")
             self.ax.set_title("Force–Displacement Response")
             self.ax.legend(facecolor=BG_CARD, edgecolor=BORDER, labelcolor=TXT, fontsize=9)
@@ -6398,7 +6528,7 @@ class ResultsTab(QWidget):
         step_idx     = self.sld_step.value()
         metric       = self.cmb_ov_metric.currentText()
         data_arr     = self._co if metric == "Opening" else self._cs
-        stroke_color = "#ff7043" if metric == "Opening" else "#ab47bc"
+        stroke_color = RESULT_OVL1 if metric == "Opening" else RESULT_OVL2
 
         # Tolerance for matching stroke y_mean to a crack position
         H = 1.0
@@ -6467,7 +6597,7 @@ class ResultsTab(QWidget):
             return
         xs = [float(meta.get("x", 0.0)) for meta in self._element_responses]
         ys = [float(meta.get("y", 0.0)) for meta in self._element_responses]
-        self.ax.scatter(xs, ys, s=28, facecolors='none', edgecolors="#ffd54f",
+        self.ax.scatter(xs, ys, s=28, facecolors='none', edgecolors=CANVAS_HIGHLIGHT,
                         linewidths=1.2, zorder=6)
         self.ax.text(0.02, 0.03, "Click a crack marker or any triangle to view element response history.",
                      transform=self.ax.transAxes, color=TXTS, fontsize=8, family="monospace")
@@ -6580,6 +6710,11 @@ class ScriptTab(QWidget):
         outer.addLayout(brow)
         self.lbl_hint = mk_lbl("Script not yet generated. Click Generate or Run Analysis.", "sub")
         outer.addWidget(self.lbl_hint)
+        self._hint_ready = False
+        def _restyle_hint():
+            if self._hint_ready:
+                self.lbl_hint.setStyleSheet(f"color:{C2};font-size:12px;")
+        register_restyle(_restyle_hint)
         self.editor = QTextEdit(); self.editor.setFont(QFont("Cascadia Code", 10))
         outer.addWidget(self.editor, stretch=1)
         self.btn_copy.clicked.connect(
@@ -6588,6 +6723,7 @@ class ScriptTab(QWidget):
 
     def set_script(self, s):
         self.editor.setPlainText(s)
+        self._hint_ready = True
         self.lbl_hint.setText("Script ready — Copy or Save .py to export.")
         self.lbl_hint.setStyleSheet(f"color:{C2};font-size:12px;")
 
@@ -7826,29 +7962,32 @@ class MainWindow(QMainWindow):
         #  header
         self.hdr = QWidget()
         self.hdr.setObjectName("header_bar")
-        self.hdr.setStyleSheet(f"background:{BG_PANEL};border-bottom:1px solid {BORDER};")
+        themed(self.hdr, lambda: f"background:{BG_PANEL};border-bottom:1px solid {BORDER};")
         hl  = QHBoxLayout(self.hdr); hl.setContentsMargins(20, 10, 20, 10)
         self.lbl_title = QLabel("2D RC PANEL ANALYSIS")
-        self.lbl_title.setStyleSheet(f"color:{C1};font-size:16px;font-weight:bold;letter-spacing:2px;")
+        themed(self.lbl_title, lambda: f"color:{C1};font-size:16px;font-weight:bold;letter-spacing:2px;")
         self.lbl_subtitle = QLabel("  Plane Stress  ·  tri31  ·  zeroLength Cracks  ·  OpenSeesPy")
-        self.lbl_subtitle.setStyleSheet(f"color:{TXTS};font-size:12px;")
+        themed(self.lbl_subtitle, lambda: f"color:{TXTS};font-size:12px;")
         self.btn_theme = QPushButton("☀ Light" if CURRENT_THEME == "dark" else "🌙 Dark")
-        self.btn_theme.setFixedSize(100, 32)
+        self.btn_theme.setFixedSize(100, 34)
         self.btn_theme.setCursor(Qt.PointingHandCursor)
         self.btn_theme.setToolTip("Toggle between dark and light mode")
         self._update_theme_button_style()
+        register_restyle(self._update_theme_button_style)
         self.lbl_wsl = QLabel("Backend: checking…")
-        self.lbl_wsl.setStyleSheet(f"color:{C4};font-size:12px;font-weight:bold;")
+        self._wsl_ok = None
+        self._restyle_wsl_label()
+        register_restyle(self._restyle_wsl_label)
         self.btn_box_select = QPushButton("⬚  Box Select")
         self.btn_box_select.setObjectName("flat")
         self.btn_box_select.setCheckable(True)
         self.btn_box_select.setFixedSize(120, 34)
         self.btn_box_select.setToolTip("Toggle box-selection mode: drag to select multiple nodes")
-        self.btn_box_select.setStyleSheet(
+        themed(self.btn_box_select, lambda:
             f"QPushButton{{background:{BG_CARD};color:{C1};"
             f"border:2px solid {C1};border-radius:6px;"
             f"padding:4px 12px;font-size:12px;font-weight:bold;min-height:34px;}}"
-            f"QPushButton:checked{{background:{C1};color:{BG_DEEP};border-color:{C1};}}"
+            f"QPushButton:checked{{background:{C1};color:{BTN_TXT};border-color:{C1};}}"
             f"QPushButton:hover{{background:{BG_PANEL};border-color:{C1};color:{C1};}}")
         hl.addWidget(self.lbl_title)
         hl.addWidget(self.lbl_subtitle)
@@ -7860,21 +7999,20 @@ class MainWindow(QMainWindow):
 
         #  quick-actions toolbar
         self.qa = QWidget()
-        self.qa.setStyleSheet(f"background:{BG_CARD};border-bottom:1px solid {BORDER};")
+        themed(self.qa, lambda: f"background:{BG_CARD};border-bottom:1px solid {BORDER};")
 
         self.btn_run = QPushButton("▶  Run Analysis")
-        self.btn_run.setMinimumHeight(36)
-        self.btn_run.setStyleSheet(
-            f"background:{C2};color:{BG_DEEP};font-weight:bold;font-size:13px;"
+        themed(self.btn_run, lambda:
+            f"background:{C2};color:{BTN_TXT};font-weight:bold;font-size:13px;"
             f"padding:7px 22px;border-radius:5px;border:none;")
         self.btn_run.setToolTip("Run the 2D panel analysis in WSL OpenSeesPy.")
 
         self.btn_refresh_cracks = QPushButton("↺ Refresh Cracks")
         self.btn_refresh_cracks.setObjectName("flat")
-        self.btn_refresh_cracks.setStyleSheet(
+        themed(self.btn_refresh_cracks, lambda:
             f"QPushButton{{background:{BG_CARD};color:{C4};border:1px solid {C4};"
             f"border-radius:5px;padding:8px 16px;font-weight:bold;font-size:12px;min-height:34px;}}"
-            f"QPushButton:hover{{background:{C4};color:{BG_DEEP};}}")
+            f"QPushButton:hover{{background:{C4};color:{BTN_TXT};}}")
         self.btn_refresh_cracks.setMinimumWidth(130)
         self.btn_refresh_cracks.setToolTip(
             "Load current crack lines from Geometry tab into the Crack Materials tab.")
@@ -7914,20 +8052,20 @@ class MainWindow(QMainWindow):
             "without leaving the current tab.")
 
         self.btn_run.setMinimumHeight(42); self.btn_run.setMinimumWidth(160)
-        self.btn_refresh_cracks.setMinimumHeight(38); self.btn_refresh_cracks.setMinimumWidth(155)
+        self.btn_refresh_cracks.setMinimumHeight(34); self.btn_refresh_cracks.setMinimumWidth(155)
         for btn in [self.btn_gen_script, self.btn_gen_script_now, self.btn_save_png, self.btn_csv]:
-            btn.setMinimumHeight(36); btn.setMinimumWidth(140)
-        self.btn_example.setFixedSize(140, 36)
-        self.btn_quick_geo.setFixedSize(155, 36)
-        self.btn_theme.setFixedSize(150, 36)
-        self.btn_example.setStyleSheet(
-            f"QPushButton{{background:{BG_CARD};color:#4ec9b0;border:1px solid #4ec9b0;"
-            f"border-radius:5px;padding:7px 14px;font-size:12px;font-weight:bold;min-height:36px;}}"
-            f"QPushButton:hover{{background:#4ec9b0;color:{BG_DEEP};}}")
-        self.btn_quick_geo.setStyleSheet(
-            f"QPushButton{{background:{BG_CARD};color:#c586c0;border:1px solid #c586c0;"
-            f"border-radius:5px;padding:7px 14px;font-size:12px;font-weight:bold;min-height:36px;}}"
-            f"QPushButton:hover{{background:#c586c0;color:{BG_DEEP};}}")
+            btn.setMinimumHeight(34); btn.setMinimumWidth(140)
+        self.btn_example.setFixedSize(140, 34)
+        self.btn_quick_geo.setFixedSize(155, 34)
+        self.btn_theme.setFixedSize(150, 34)
+        themed(self.btn_example, lambda:
+            f"QPushButton{{background:{BG_CARD};color:{ACCENT_TEAL};border:1px solid {ACCENT_TEAL};"
+            f"border-radius:5px;padding:7px 14px;font-size:12px;font-weight:bold;min-height:34px;}}"
+            f"QPushButton:hover{{background:{ACCENT_TEAL};color:{BTN_TXT};}}")
+        themed(self.btn_quick_geo, lambda:
+            f"QPushButton{{background:{BG_CARD};color:{ACCENT_PURPLE};border:1px solid {ACCENT_PURPLE};"
+            f"border-radius:5px;padding:7px 14px;font-size:12px;font-weight:bold;min-height:34px;}}"
+            f"QPushButton:hover{{background:{ACCENT_PURPLE};color:{BTN_TXT};}}")
 
         qal_outer = QVBoxLayout(self.qa)
         qal_outer.setContentsMargins(16, 6, 16, 6)
@@ -7952,17 +8090,22 @@ class MainWindow(QMainWindow):
         workflow_row.setContentsMargins(16, 2, 16, 2)
         self.lbl_workflow = QLabel(
             "  ① Geometry  →  ② Crack Materials  →  ③ Analysis  →  ▶ Run  →  ⑤ Results")
-        self.lbl_workflow.setStyleSheet(f"color:{TXTS};font-size:10px;")
+        # Transient status messages may recolor this label; on theme toggle it
+        # resets to the neutral color of the new theme.
+        themed(self.lbl_workflow, lambda: f"color:{TXTS};font-size:10px;")
         workflow_row.addWidget(self.lbl_workflow)
         workflow_row.addStretch()
         vl.addLayout(workflow_row)
 
         # tabs
-        self.body = QWidget(); self.body.setStyleSheet(f"background:{BG_DEEP};")
+        self.body = QWidget(); themed(self.body, lambda: f"background:{BG_DEEP};")
         bl   = QVBoxLayout(self.body); bl.setContentsMargins(12, 12, 12, 12)
         self.tabs = QTabWidget()
         self.tabs.setTabPosition(QTabWidget.North)
-        self.tabs.tabBar().setExpanding(True)
+        # Don't stretch tabs to fill width (truncates 6 labels at the 380px min);
+        # keep natural widths, no eliding, no scroll buttons.
+        self.tabs.tabBar().setExpanding(False)
+        self.tabs.tabBar().setElideMode(Qt.ElideNone)
         self.tabs.tabBar().setUsesScrollButtons(False)
 
         self.shared_canvas = PanelMeshCanvas()
@@ -7999,17 +8142,16 @@ class MainWindow(QMainWindow):
         self._load_backend_config()
         QApplication.instance().setStyleSheet(_build_style(CURRENT_THEME))
         self.btn_theme.setText("☀ Light" if CURRENT_THEME == "dark" else "🌙 Dark")
-        self._update_theme_button_style()
-        self.hdr.setStyleSheet(f"background:{BG_PANEL};border-bottom:1px solid {BORDER};")
-        self.lbl_title.setStyleSheet(f"color:{C1};font-size:16px;font-weight:bold;letter-spacing:2px;")
-        self.lbl_subtitle.setStyleSheet(f"color:{TXTS};font-size:12px;")
-        self.qa.setStyleSheet(f"background:{BG_CARD};border-bottom:1px solid {BORDER};")
-        self.body.setStyleSheet(f"background:{BG_DEEP};")
+        # Apply the (possibly config-loaded) theme to every registered widget,
+        # replacing the previous block of manual per-widget restyles.
+        run_restyles()
 
+        # Short labels so all 6 fit at the 380px minimum panel width without
+        # eliding or scroll buttons (see tabBar config above).
         for name, tab in [
             ("① Geo",     self.geo),
             ("② Cracks",  self.crk),
-            ("③ Analysis", self.anl),
+            ("③ Anlys",   self.anl),
             ("④ Run",      self.run),
             ("⑤ Results",  self.res),
             ("⑥ Script",   self.scr),
@@ -8028,6 +8170,9 @@ class MainWindow(QMainWindow):
         self.geo.canvas_panel.setMinimumWidth(480)
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
+        # Keep the floating zoom overlay pinned bottom-left when the splitter moves
+        self.splitter.splitterMoved.connect(
+            lambda *_: self.geo._reposition_zoom_overlay())
         QTimer.singleShot(0, self._fit_splitter_to_screen)
 
         bl.addWidget(self.splitter); vl.addWidget(self.body, stretch=1)
@@ -8037,7 +8182,7 @@ class MainWindow(QMainWindow):
 
         self.statusBar().showMessage(
             "Ready — set panel geometry, assign BCs/loads, then Run Analysis.")
-        self.statusBar().setStyleSheet(
+        themed(self.statusBar(), lambda:
             f"background:{BG_PANEL};color:{TXTS};border-top:1px solid {BORDER};")
 
         #  wire signals
@@ -8113,99 +8258,29 @@ class MainWindow(QMainWindow):
             f"border-radius:14px;font-size:11px;font-weight:bold;padding:4px 12px;}}"
             f"QPushButton:hover{{background:{BG_PANEL};border-color:{C1};}}")
 
+    def _restyle_wsl_label(self):
+        """Color the backend status label by state (None=checking, True=ok, False=fail)."""
+        col = C4 if self._wsl_ok is None else (C2 if self._wsl_ok else C3)
+        self.lbl_wsl.setStyleSheet(f"color:{col};font-size:12px;font-weight:bold;")
+
     def _toggle_theme(self):
         new_theme = "light" if CURRENT_THEME == "dark" else "dark"
         _apply_theme(new_theme)
         new_style = _build_style(new_theme)
         QApplication.instance().setStyleSheet(new_style)
 
-        if new_theme == "dark":
-            self.btn_theme.setText("☀ Light")
-        else:
-            self.btn_theme.setText("🌙 Dark")
-        self._update_theme_button_style()
+        self.btn_theme.setText("☀ Light" if new_theme == "dark" else "🌙 Dark")
 
-        # Update header bar
-        for child in self.centralWidget().children():
-            if isinstance(child, QWidget) and child.objectName() == "header_bar":
-                child.setStyleSheet(f"background:{BG_PANEL};border-bottom:1px solid {BORDER};")
-                break
-
-        self.lbl_title.setStyleSheet(
-            f"color:{C1};font-size:16px;font-weight:bold;letter-spacing:2px;")
-        self.lbl_subtitle.setStyleSheet(f"color:{TXTS};font-size:12px;")
-        self.qa.setStyleSheet(f"background:{BG_CARD};border-bottom:1px solid {BORDER};")
-        self.body.setStyleSheet(f"background:{BG_DEEP};")
-        self.statusBar().setStyleSheet(
-            f"background:{BG_PANEL};color:{TXTS};border-top:1px solid {BORDER};")
-
-        # Update WSL label
-        self.lbl_wsl.setStyleSheet(
-            f"color:{C2 if 'OK' in self.lbl_wsl.text() else C3};"
-            f"font-size:12px;font-weight:bold;")
-
-        # Refresh matplotlib
-        for fig_owner in [self.res, self.crk]:
-            if hasattr(fig_owner, 'fig'):
-                fig_owner.fig.set_facecolor(BG_DEEP)
-            if hasattr(fig_owner, 'ax'):
-                fig_owner.ax.set_facecolor(BG_PANEL)
-                for s in fig_owner.ax.spines.values():
-                    s.set_edgecolor(BORDER)
-                fig_owner.ax.tick_params(colors=TXTS, labelsize=9)
-            if hasattr(fig_owner, 'canv'):
-                fig_owner.canv.draw_idle()
-            if hasattr(fig_owner, 'preview_canvas'):
-                fig_owner.preview_canvas.draw_idle()
+        # Single restyle mechanism: re-apply every registered theme-dependent
+        # closure (header, toolbar, buttons, labels, checkboxes, zoom overlay,
+        # mode buttons, crack cards, CrackMaterialTab inputs, matplotlib axes…).
+        # This replaces the long block of manual per-widget restyles.
+        run_restyles()
 
         if self._quick_geo_dlg is not None:
             self._quick_geo_dlg.setStyleSheet(new_style)
 
-        # Restyle canvas header checkboxes for current theme
-        chk_style = (
-            f"QCheckBox{{color:{TXT};spacing:6px;font-size:12px;}}"
-            f"QCheckBox::indicator{{width:14px;height:14px;"
-            f"border:1px solid {BORDER};border-radius:3px;background:{BG_INPUT};}}"
-            f"QCheckBox::indicator:checked{{background:{C1};border-color:{C1};}}"
-        )
-        for chk in [self.geo.chk_show_ids, self.geo.chk_show_elem_ids,
-                    self.geo.chk_show_crack_links, self.geo.chk_show_bcs,
-                    self.geo.chk_show_loads]:
-            chk.setStyleSheet(chk_style)
-
-        # Restyle zoom overlay buttons
-        zoom_btn_style = (
-            f"QPushButton{{background:{BG_CARD};color:{TXT};"
-            f"border:1px solid {BORDER};border-radius:4px;"
-            f"font-weight:bold;font-size:14px;padding:2px;}}"
-            f"QPushButton:hover{{background:{C1};color:{BG_DEEP};border-color:{C1};}}"
-        )
-        for btn in [self.geo.btn_zoom_in, self.geo.btn_zoom_out, self.geo.btn_zoom_reset]:
-            btn.setStyleSheet(zoom_btn_style)
-
-        # Restyle zoom percentage label
-        if hasattr(self.geo, 'lbl_zoom'):
-            self.geo.lbl_zoom.setStyleSheet(
-                f"color:{TXTS};font-size:9px;font-weight:bold;background:transparent;")
-
-        # Restyle canvas hint and mode labels
-        self.geo.lbl_canvas_hint.setStyleSheet(f"color:{TXTS};font-size:12px;")
-        self.geo.lbl_canvas_mode.setStyleSheet(f"color:{C4};font-weight:bold;")
-        if hasattr(self.geo, "lbl_canvas_view_only"):
-            self.geo.lbl_canvas_view_only.setStyleSheet(
-                f"color:{BG_DEEP};background:{C4};font-size:10px;"
-                f"font-weight:bold;padding:2px 8px;")
-        mode_checked_style = (
-            f"QPushButton#flat:checked{{background:{C4};color:{BG_DEEP};"
-            f"border:1px solid {C4};}}"
-        )
-        self.geo.btn_crack_mode.setStyleSheet(mode_checked_style)
-        self.geo.btn_hand_draw.setStyleSheet(mode_checked_style)
-
-        # Restyle the workflow label
-        self.lbl_workflow.setStyleSheet(f"color:{TXTS};font-size:10px;")
-
-        # Force canvas repaint with new colors
+        # Force canvas repaint with new colors (paintEvent reads globals each frame)
         self.geo.canvas.update()
 
         self._save_backend_config()
@@ -8776,6 +8851,8 @@ class MainWindow(QMainWindow):
         self._quick_geo_dlg.txt_cracks.setText(
             ", ".join(f"{y:.3f}" for y in self.geo._crack_ys))
         self._quick_geo_dlg.cmb_bc.setCurrentIndex(0)
+        # Re-apply the current theme on open (the dialog persists between opens)
+        self._quick_geo_dlg.setStyleSheet(_build_style(CURRENT_THEME))
         self._quick_geo_dlg.show()
         self._quick_geo_dlg.raise_()
         self._quick_geo_dlg.activateWindow()
