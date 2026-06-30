@@ -569,6 +569,7 @@ class PanelMeshCanvas(QWidget):
     mode_exited_draw     = pyqtSignal()
     zoom_repositioned    = pyqtSignal()
     zoom_changed         = pyqtSignal(float)
+    crack_row_clicked    = pyqtSignal(float)   # emits crack Y when crack line clicked
 
     MODE_SELECT = "select"
     MODE_CRACK  = "crack"
@@ -865,10 +866,16 @@ class PanelMeshCanvas(QWidget):
                     self.node_clicked.emit(nid)
                 self.update()
             else:
-                # clicking empty space only clears the single-node highlight,
-                # NOT the multi-selection — user may have misclicked
+                # clicking empty space: check if near a crack row
                 self.selected_node = None
                 self.node_clicked.emit(-1)
+                mx, my = self._to_model(px, py)
+                if self.crack_pairs and self.panel_H > 0:
+                    tol = 0.035 * self.panel_H
+                    for cp in self.crack_pairs:
+                        if abs(float(cp[2]) - my) < tol:
+                            self.crack_row_clicked.emit(float(cp[2]))
+                            break
                 self.update()
         elif self.mode == self.MODE_CRACK:
             if event.button() == Qt.RightButton:
@@ -1713,6 +1720,38 @@ class GeometryTab(QWidget):
         vc.addWidget(mk_lbl(
             "Drawn cracks stay visible in red and snap to the nearest mesh row for analysis input.",
             "sub"))
+
+        # ── Crack info panel (shown when user clicks a crack line) ──
+        self.lbl_crack_info = QLabel("")
+        themed(self.lbl_crack_info, lambda:
+            f"color:{C4};font-size:11px;font-weight:bold;padding:6px 10px;"
+            f"background:{BG_CARD};border-radius:6px;border-left:3px solid {C4};"
+            f"margin-top:4px;")
+        self.lbl_crack_info.setWordWrap(True)
+        self.lbl_crack_info.setVisible(False)
+        vc.addWidget(self.lbl_crack_info)
+
+        crack_action_row = QHBoxLayout()
+        self.btn_select_crack_nodes = QPushButton("⬚ Select All Nodes on Crack")
+        self.btn_select_crack_nodes.setObjectName("flat")
+        self.btn_select_crack_nodes.setVisible(False)
+        self.btn_select_crack_nodes.setMinimumHeight(32)
+        self.btn_select_crack_nodes.setToolTip(
+            "Select all below+above nodes on this crack row for bulk BC or load assignment")
+
+        self.btn_fix_crack_nodes = QPushButton("▼ Fix All Crack Nodes")
+        themed(self.btn_fix_crack_nodes, lambda:
+            f"QPushButton{{background:{BG_CARD};color:{C4};border:1px solid {C4};"
+            f"border-radius:5px;padding:6px 14px;font-weight:bold;font-size:12px;"
+            f"min-height:32px;}} QPushButton:hover{{background:{C4};color:{BTN_TXT};}}")
+        self.btn_fix_crack_nodes.setVisible(False)
+        self.btn_fix_crack_nodes.setToolTip(
+            "Fix X+Y on every node on this crack row (both below and above)")
+
+        crack_action_row.addWidget(self.btn_select_crack_nodes)
+        crack_action_row.addWidget(self.btn_fix_crack_nodes)
+        crack_action_row.addStretch()
+        vc.addLayout(crack_action_row)
         lv.addWidget(grp_crack)
 
         # Boundary conditions
@@ -1906,9 +1945,23 @@ class GeometryTab(QWidget):
         self._grp_lc_path.setVisible(False)
 
         vld.addWidget(self._grp_lc_detail)
+
+        lc_quick_row = QHBoxLayout()
+        self.btn_quick_apply_load = QPushButton("✔ Apply Loads to Canvas")
+        self.btn_quick_apply_load.setObjectName("success")
+        self.btn_quick_apply_load.setMinimumHeight(34)
+        self.btn_quick_apply_load.setToolTip(
+            "Refresh canvas load arrows from the current load case.\n"
+            "Use this after assigning loads in the Analysis tab.")
+        lc_quick_row.addWidget(self.btn_quick_apply_load)
+        lc_quick_row.addStretch()
+        vld.addLayout(lc_quick_row)
         lv.addWidget(grp_load)
 
         # Reinforcement (bars crossing crack interfaces — fed to rebar_definitions)
+        # Wheel-event guard shared by the per-crack angle spinboxes and the rebar
+        # spinboxes below, so scrolling the left panel doesn't change their values.
+        self._crack_angle_wheel_filter = SpinboxWheelEventFilter(self)
         grp_rebar = QGroupBox("Reinforcement")
         vr = QVBoxLayout(grp_rebar); vr.setSpacing(6)
         hint = mk_lbl(
@@ -1936,6 +1989,8 @@ class GeometryTab(QWidget):
         for _rb_sb in (self.sb_rebar_As, self.sb_rebar_Es, self.sb_rebar_fy,
                        self.sb_rebar_Lunb, self.sb_rebar_x):
             _rb_sb.setMinimumWidth(120); _rb_sb.setMaximumWidth(200)
+            _rb_sb.setFocusPolicy(Qt.ClickFocus)
+            _rb_sb.installEventFilter(self._crack_angle_wheel_filter)
 
         def _labeled_field(text, widget):
             col = QVBoxLayout(); col.setContentsMargins(0, 0, 0, 0); col.setSpacing(2)
@@ -2037,6 +2092,7 @@ class GeometryTab(QWidget):
         self._hand_draw_snapshot = None
         self._crack_mode_active = False
         self._hand_draw_active = False
+        self._selected_crack_y = None
 
         # wire
         self.btn_gen.clicked.connect(self._generate)
@@ -2056,6 +2112,9 @@ class GeometryTab(QWidget):
         self.canvas.node_moved.connect(self._on_node_moved)
         self.canvas.crack_y_added.connect(self._add_crack_y)
         self.canvas.crack_y_removed.connect(self._remove_crack_y)
+        self.canvas.crack_row_clicked.connect(self._on_crack_row_clicked)
+        self.btn_select_crack_nodes.clicked.connect(self._select_all_crack_nodes)
+        self.btn_fix_crack_nodes.clicked.connect(self._fix_all_crack_nodes)
         self.canvas.crack_angle_changed.connect(
             lambda v: self.sb_crack_angle.setValue(round(v, 1)))
         self.canvas.hand_strokes_changed.connect(self._on_hand_strokes_changed)
@@ -2071,6 +2130,7 @@ class GeometryTab(QWidget):
         self.btn_clear_node_bc.clicked.connect(self._clear_node_bc)
         self.cmb_load_case.currentTextChanged.connect(self._on_load_case_changed)
         self.btn_add_case.clicked.connect(self._add_load_case)
+        self.btn_quick_apply_load.clicked.connect(self._quick_apply_loads)
         self.btn_remove_case.clicked.connect(self._remove_load_case)
         self.cmb_lc_ts_type.currentTextChanged.connect(self._on_lc_ts_changed)
         self.cmb_lc_ts_type.currentTextChanged.connect(self._update_lc_behavior_label)
@@ -2764,6 +2824,8 @@ class GeometryTab(QWidget):
             angle_sb.setDecimals(1)
             angle_sb.setSingleStep(1.0)
             angle_sb.setValue(stored_angle)   # set BEFORE connecting signal
+            angle_sb.setFocusPolicy(Qt.ClickFocus)
+            angle_sb.installEventFilter(self._crack_angle_wheel_filter)
             angle_sb.setFixedHeight(34)
             angle_sb.setMinimumWidth(160)
             angle_sb.setToolTip(
@@ -2799,6 +2861,89 @@ class GeometryTab(QWidget):
             self._crack_list_layout.addWidget(card)
 
         self._crack_list_layout.addStretch()
+
+    def _on_crack_row_clicked(self, y):
+        """Show crack info panel when user clicks a crack line on canvas."""
+        self._selected_crack_y = y
+        md = self._mesh_data
+        if md is None:
+            return
+        pairs_here = [cp for cp in md["crack_pairs"] if abs(float(cp[2]) - y) < 1e-6]
+        n_pairs = len(pairs_here)
+        below_nids = {int(cp[0]) for cp in pairs_here}
+        above_nids = {int(cp[1]) for cp in pairs_here}
+        all_crack_nids = below_nids | above_nids
+        bc_on_crack = {nid: self._bc_nodes[nid]
+                       for nid in all_crack_nids if nid in self._bc_nodes}
+        n_bc = len(bc_on_crack)
+        angle_deg = self._crack_angle_map.get(round(float(y), 6),
+                                               float(self.sb_crack_angle.value()))
+        mat_info = ""
+        try:
+            mw = self.window()
+            if hasattr(mw, 'crk') and mw.crk.tbl.rowCount() > 0:
+                for r in range(mw.crk.tbl.rowCount()):
+                    meta = mw.crk._row_meta(r) if hasattr(mw.crk, '_row_meta') else {}
+                    pk = tuple(meta.get("pair_key", (0, 0))) if meta else (0, 0)
+                    if pairs_here and pk == (int(pairs_here[0][0]), int(pairs_here[0][1])):
+                        mat_item = mw.crk.tbl.item(r, 5)
+                        if mat_item:
+                            mat_info = f"  |  Material: {mat_item.text()}"
+                        break
+        except Exception:
+            pass
+        info = (f"Crack row  y = {y:.4f} m  |  θ = {angle_deg:.1f}°  |  "
+                f"{n_pairs} interface elements  |  "
+                f"{n_bc} BC node(s) assigned{mat_info}")
+        self.lbl_crack_info.setText(info)
+        self.lbl_crack_info.setVisible(True)
+        self.btn_select_crack_nodes.setVisible(True)
+        self.btn_fix_crack_nodes.setVisible(True)
+        pair_keys = {(int(cp[0]), int(cp[1])) for cp in pairs_here}
+        self.canvas.set_highlighted_crack_pairs(pair_keys)
+        self.lbl_sel_node.setText(
+            f"Crack at y={y:.4f} m — click 'Select All Nodes' or 'Fix All Crack Nodes'")
+
+    def _select_all_crack_nodes(self):
+        """Select all nodes on the clicked crack row for bulk BC/load assignment."""
+        if self._selected_crack_y is None or self._mesh_data is None:
+            return
+        y = self._selected_crack_y
+        pairs_here = [cp for cp in self._mesh_data["crack_pairs"]
+                      if abs(float(cp[2]) - y) < 1e-6]
+        nids = {int(cp[0]) for cp in pairs_here} | {int(cp[1]) for cp in pairs_here}
+        if not nids:
+            return
+        self.canvas._multi_selected = set(nids)
+        self.canvas.selected_node = next(iter(nids))
+        self._box_selected_nodes = list(nids)
+        self.canvas.set_box_selected(self._box_selected_nodes)
+        self.btn_apply_bc.setEnabled(True)
+        try:
+            self.btn_apply_load.setEnabled(True)
+        except AttributeError:
+            pass
+        n = len(nids)
+        self.lbl_sel_node.setText(
+            f"{n} crack nodes selected at y={y:.4f} m — assign BC or load below")
+        self.canvas.update()
+
+    def _fix_all_crack_nodes(self):
+        """Assign Fix X+Y BC to every node on the clicked crack row."""
+        if self._selected_crack_y is None or self._mesh_data is None:
+            return
+        y = self._selected_crack_y
+        pairs_here = [cp for cp in self._mesh_data["crack_pairs"]
+                      if abs(float(cp[2]) - y) < 1e-6]
+        nids = {int(cp[0]) for cp in pairs_here} | {int(cp[1]) for cp in pairs_here}
+        if not nids:
+            return
+        for nid in nids:
+            self._bc_nodes[nid] = (1, 1)
+        self.canvas.set_bc_nodes(self._bc_nodes)
+        self._update_bc_table()
+        self.lbl_sel_node.setText(
+            f"Fixed {len(nids)} nodes on crack at y={y:.4f} m (Fix X+Y)")
 
     def _refresh_rebar_crack_y_options(self):
         ys = sorted(float(y) for y in self._crack_ys)
@@ -2918,12 +3063,18 @@ class GeometryTab(QWidget):
             n = len(self._box_selected_nodes)
             self.lbl_sel_node.setText(f"{n} node{'s' if n != 1 else ''} selected")
             self.btn_apply_bc.setEnabled(True)
-            self.btn_apply_load.setEnabled(True)
+            try:
+                self.btn_apply_load.setEnabled(True)
+            except AttributeError:
+                pass
         else:
             if self._selected_node is None:
                 self.lbl_sel_node.setText(_NO_NODE_HINT)
                 self.btn_apply_bc.setEnabled(False)
-                self.btn_apply_load.setEnabled(False)
+                try:
+                    self.btn_apply_load.setEnabled(False)
+                except AttributeError:
+                    pass
             else:
                 md = self._mesh_data
                 if md is not None:
@@ -3614,6 +3765,19 @@ class GeometryTab(QWidget):
     # ------------------------------------------------------------------ #
     # Load case manager methods                                            #
     # ------------------------------------------------------------------ #
+    def _quick_apply_loads(self):
+        if self._mesh_data is None:
+            QMessageBox.warning(self, "No Mesh", "Generate a mesh first.")
+            return
+        self.canvas.set_load_nodes(self._load_nodes)
+        n = len(self._load_nodes)
+        if n == 0:
+            self.lbl_sel_node.setText(
+                "No loads in current case — assign Fx/Fy in the Analysis tab first")
+        else:
+            self.lbl_sel_node.setText(
+                f"Load case '{self._current_load_case}' refreshed: {n} loaded node(s) on canvas")
+
     def _rebuild_load_case_combo(self):
         self.cmb_load_case.blockSignals(True)
         self.cmb_load_case.clear()
@@ -6595,8 +6759,14 @@ class ResultsTab(QWidget):
     def _draw_clickable_crack_markers(self):
         if not self._element_responses:
             return
-        xs = [float(meta.get("x", 0.0)) for meta in self._element_responses]
-        ys = [float(meta.get("y", 0.0)) for meta in self._element_responses]
+        safe = []
+        for item in self._element_responses:
+            try:
+                safe.append(dict(item))
+            except Exception:
+                safe.append({})
+        xs = [float(r.get("x", 0.0)) for r in safe]
+        ys = [float(r.get("y", 0.0)) for r in safe]
         self.ax.scatter(xs, ys, s=28, facecolors='none', edgecolors=CANVAS_HIGHLIGHT,
                         linewidths=1.2, zorder=6)
         self.ax.text(0.02, 0.03, "Click a crack marker or any triangle to view element response history.",
@@ -6616,8 +6786,14 @@ class ResultsTab(QWidget):
 
         # First try crack interface element markers
         if self._element_responses:
-            xs = [float(meta.get("x", 0.0)) for meta in self._element_responses]
-            ys = [float(meta.get("y", 0.0)) for meta in self._element_responses]
+            safe_responses = []
+            for item in self._element_responses:
+                try:
+                    safe_responses.append(dict(item))
+                except Exception:
+                    safe_responses.append({})
+            xs = [float(r.get("x", 0.0)) for r in safe_responses]
+            ys = [float(r.get("y", 0.0)) for r in safe_responses]
             bounds_x = max(xs) - min(xs) if len(xs) > 1 else 1.0
             bounds_y = max(ys) - min(ys) if len(ys) > 1 else 1.0
             tol = 0.04 * max(bounds_x, bounds_y, 1.0)
@@ -6629,7 +6805,7 @@ class ResultsTab(QWidget):
                     best_idx = idx
                     best_dist = dist
             if best_idx is not None:
-                dlg = CrackResponseDialog(self._element_responses[best_idx], self)
+                dlg = CrackResponseDialog(safe_responses[best_idx], self)
                 dlg.exec_()
                 return
 
